@@ -14,7 +14,7 @@ const ROLES = [
   { value: 'requisition_admin', label: 'Requisition Admin' },
   { value: 'quotation_admin', label: 'Quotation Admin' },
   { value: 'accounts', label: 'Accounts' },
-  { value: 'user', label: 'User (Floor Manager)' },
+  { value: 'user', label: 'User' },
 ]
 
 function UserModal({ user, onClose, onSuccess }: any) {

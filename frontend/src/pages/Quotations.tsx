@@ -6,19 +6,24 @@ import { Plus, Eye, Download, Trash2 } from 'lucide-react'
 import { useForm, useFieldArray } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import LoadingSpinner from '../components/LoadingSpinner'
-import type { Enquiry, EnquiryStatus, Offer } from '../types'
+import type { Enquiry, Offer } from '../types'
 import OfferDocument from '../components/OfferDocument'
 import { useAuth } from '../hooks/useAuth'
 import * as XLSX from 'xlsx'
+import PageHeader from '../components/ui/PageHeader'
+import Button from '../components/ui/Button'
+import StatusPill from '../components/ui/StatusPill'
+import MonoEyebrow from '../components/ui/MonoEyebrow'
+import { statusMap, humanize } from '../components/ui/statusMap'
 
-const statusColors: Record<EnquiryStatus, string> = {
-  new: 'bg-blue-100 text-blue-700',
-  offer_sent: 'bg-yellow-100 text-yellow-700',
-  negotiation: 'bg-orange-100 text-orange-700',
-  order_received: 'bg-green-100 text-green-700',
-  lost: 'bg-red-100 text-red-700',
-  expired: 'bg-gray-100 text-gray-700',
-}
+const ENQ_TABS: { value: string; label: string }[] = [
+  { value: '', label: 'All' },
+  { value: 'new', label: 'New' },
+  { value: 'offer_sent', label: 'Offer sent' },
+  { value: 'negotiation', label: 'Negotiating' },
+  { value: 'order_received', label: 'Won' },
+  { value: 'lost', label: 'Lost' },
+]
 
 function CreateEnquiryModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const [loading, setLoading] = useState(false)
@@ -27,7 +32,7 @@ function CreateEnquiryModal({ onClose, onSuccess }: { onClose: () => void; onSuc
     (brands.find((b: any) => b.name.toLowerCase().includes('ami enterprise')) || brands[0])?.id || ''
   )
   const { register, control, handleSubmit } = useForm({
-    defaultValues: { brand_id: defaultBrandId, customer_name: '', contact_person: '', mobile: '', email: '', customer_city: '', source: 'phone', due_date: '', notes: '', items: [{ description: '', qty: 0, uom: 'mtr', notes: '' }] }
+    defaultValues: { brand_id: defaultBrandId, customer_name: '', contact_person: '', customer_address: '', mobile: '', email: '', customer_city: '', source: 'phone', due_date: '', notes: '', items: [{ description: '', qty: 0, uom: 'mtr', notes: '' }] }
   })
   const { fields, append } = useFieldArray({ control, name: 'items' })
 
@@ -59,6 +64,7 @@ function CreateEnquiryModal({ onClose, onSuccess }: { onClose: () => void; onSuc
             <div><label className="block text-sm font-medium text-gray-700 mb-1">Contact Person</label><input className="input-field" {...register('contact_person')} /></div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1">Mobile</label><input className="input-field" {...register('mobile')} /></div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1">Email</label><input type="email" className="input-field" {...register('email')} /></div>
+            <div className="col-span-2"><label className="block text-sm font-medium text-gray-700 mb-1">Address</label><textarea rows={2} className="input-field" {...register('customer_address')} /></div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1">City</label><input className="input-field" {...register('customer_city')} /></div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1">Source</label>
               <select className="input-field" {...register('source')}>
@@ -97,7 +103,7 @@ function CreateOfferModal({ enquiry, onClose, onSuccess }: { enquiry: Enquiry; o
   const [loading, setLoading] = useState(false)
   const { register, control, handleSubmit } = useForm({
     defaultValues: {
-      enquiry_id: enquiry.id, offer_date: new Date().toISOString().split('T')[0], validity_date: '', notes: '',
+      enquiry_id: enquiry.id, enquiry_no: enquiry.enquiry_no || '', offer_date: new Date().toISOString().split('T')[0], validity_date: '', notes: '',
       terms_gst: 'Extra @ 18% (IGST)', terms_price_validity: `For placement of P.O. by ${new Date(Date.now() + 7*86400000).toLocaleDateString('en-IN')}`,
       terms_delivery: 'Ready stock subject to prior sale', terms_supply_basis: 'FOR your works for total quantity in a single lot',
       terms_weight_tolerance: 'Weighbridge variation tolerance of 0.5 % to be allowed',
@@ -129,6 +135,7 @@ function CreateOfferModal({ enquiry, onClose, onSuccess }: { enquiry: Enquiry; o
           <div className="grid grid-cols-2 gap-4">
             <div><label className="block text-sm font-medium text-gray-700 mb-1">Offer Date</label><input type="date" className="input-field" {...register('offer_date')} /></div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1">Validity Date</label><input type="date" className="input-field" {...register('validity_date')} /></div>
+            <div className="col-span-2"><label className="block text-sm font-medium text-gray-700 mb-1">Enquiry No.</label><input className="input-field" placeholder="Enquiry / customer ref" {...register('enquiry_no')} /></div>
           </div>
 
           <div>
@@ -196,6 +203,14 @@ export default function Quotations() {
     toast.success('Status updated')
   }
 
+  const updateOfferStatus = async (offerId: number, s: string) => {
+    try {
+      await offersApi.updateStatus(offerId, { status: s })
+      qc.invalidateQueries({ queryKey: ['enquiries'] })
+      toast.success('Offer status updated')
+    } catch (err: any) { toast.error(err.response?.data?.error || 'Failed') }
+  }
+
   const deleteEnquiry = async (id: number, customer: string) => {
     if (!window.confirm(`Delete enquiry for ${customer}? This will also delete all associated offers.`)) return
     try {
@@ -214,69 +229,258 @@ export default function Quotations() {
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Enquiries'); XLSX.writeFile(wb, 'enquiries.xlsx')
   }
 
+
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <h1 className="text-2xl font-bold text-gray-900">Enquiries & Quotations</h1>
-        <div className="flex gap-2">
-          <button onClick={exportExcel} className="btn-secondary text-sm flex items-center justify-center gap-1 flex-1 sm:flex-initial"><Download size={14} />Export</button>
-          <button onClick={() => setShowCreate(true)} className="btn-primary flex items-center justify-center gap-2 flex-1 sm:flex-initial"><Plus size={16} />New Enquiry</button>
-        </div>
+    <div>
+      <PageHeader
+        breadcrumb={['Ami Enterprises', 'Sales & Quotations']}
+        title="Enquiries"
+        actions={
+          <>
+            <Button variant="secondary" leadingIcon={<Download size={14} />} onClick={exportExcel}>
+              Export
+            </Button>
+            <Button variant="primary" leadingIcon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
+              New enquiry
+            </Button>
+          </>
+        }
+      />
+
+      {/* Tabs */}
+      <div
+        className="flex gap-0 mb-5 overflow-x-auto"
+        style={{ borderBottom: '1px solid var(--rule-lt)' }}
+      >
+        {ENQ_TABS.map((t) => {
+          const active = status === t.value
+          const count = t.value
+            ? enquiries.filter((e: Enquiry) => e.status === t.value).length
+            : enquiries.length
+          return (
+            <button
+              key={t.value || 'all'}
+              onClick={() => setStatus(t.value)}
+              className="inline-flex items-center gap-2 whitespace-nowrap"
+              style={{
+                padding: '12px 18px',
+                fontFamily: 'var(--font-sans)',
+                fontSize: 13,
+                fontWeight: 500,
+                color: active ? 'var(--color-ink)' : 'var(--mute-lt)',
+                borderBottom: `2px solid ${active ? 'var(--color-warm)' : 'transparent'}`,
+                background: 'transparent',
+                cursor: 'pointer',
+              }}
+            >
+              {t.label}
+              <span
+                style={{
+                  fontFamily: 'var(--font-mono)',
+                  fontSize: 10,
+                  color: 'var(--mute-lt)',
+                  letterSpacing: '.05em',
+                }}
+              >
+                {count}
+              </span>
+            </button>
+          )
+        })}
       </div>
 
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {['', 'new', 'offer_sent', 'negotiation', 'order_received', 'lost'].map(s => (
-          <button key={s} onClick={() => setStatus(s)} className={`px-3 py-1.5 rounded-lg text-sm border transition-colors whitespace-nowrap shrink-0 ${status === s ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}>
-            {s ? s.replace(/_/g, ' ') : 'All'}
-          </button>
-        ))}
-      </div>
-
-      <div className="card">
-        {isLoading ? <LoadingSpinner /> : (
-          <div className="space-y-3">
-            {enquiries.map((e: Enquiry) => (
-              <div key={e.id} className="border border-gray-100 rounded-lg p-4">
-                <div className="flex items-start justify-between">
-                  <div>
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="font-medium text-gray-900">{e.customer_name}</span>
-                      <span className="text-xs text-gray-500">{e.enquiry_no}</span>
-                      <span className={`badge-status ${statusColors[e.status]}`}>{e.status.replace(/_/g, ' ')}</span>
-                    </div>
-                    <div className="text-sm text-gray-500">{e.contact_person && `${e.contact_person} · `}{e.mobile}{e.customer_city && ` · ${e.customer_city}`}</div>
-                    {e.items?.map((item, idx) => <div key={idx} className="text-xs text-gray-600 mt-1">• {item.description} {item.qty ? `(${item.qty} ${item.uom})` : ''}</div>)}
+      {/* List */}
+      <div style={{ background: '#fff', border: '1px solid var(--rule-lt)' }}>
+        {isLoading ? (
+          <LoadingSpinner />
+        ) : enquiries.length === 0 ? (
+          <p className="py-12 text-center" style={{ fontSize: 13, color: 'var(--mute-lt)' }}>
+            No enquiries found
+          </p>
+        ) : (
+          enquiries.map((e: Enquiry, i: number) => (
+            <div
+              key={e.id}
+              style={{
+                padding: '18px 20px',
+                borderTop: i > 0 ? '1px solid var(--rule-lt)' : 'none',
+              }}
+            >
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-3 mb-1 flex-wrap">
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 12,
+                        color: 'var(--color-warm-dk)',
+                        fontWeight: 600,
+                      }}
+                    >
+                      {e.enquiry_no}
+                    </span>
+                    <span
+                      style={{
+                        fontFamily: 'var(--font-serif)',
+                        fontSize: 16,
+                        fontWeight: 500,
+                        letterSpacing: '-0.01em',
+                      }}
+                    >
+                      {e.customer_name}
+                    </span>
+                    <StatusPill kind={statusMap.enquiry(e.status)} label={humanize(e.status)} />
                   </div>
-                  <div className="flex flex-col gap-2 items-end">
-                    <div className="flex gap-2">
-                      <button onClick={() => setSelectedEnquiry(e)} className="btn-secondary text-xs flex items-center gap-1"><Plus size={12} />Offer</button>
-                      {isSuperAdmin() && <button onClick={() => deleteEnquiry(e.id, e.customer_name)} className="text-red-400 hover:text-red-600 p-1" title="Delete enquiry"><Trash2 size={14} /></button>}
+                  <div
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 12,
+                      color: 'var(--mute-lt)',
+                      letterSpacing: '.02em',
+                    }}
+                  >
+                    {e.contact_person && `${e.contact_person} · `}
+                    {e.mobile}
+                    {e.customer_city && ` · ${e.customer_city}`}
+                  </div>
+                  {(e.items || []).slice(0, 3).map((item, idx) => (
+                    <div
+                      key={idx}
+                      style={{
+                        fontSize: 13,
+                        color: 'var(--color-ink)',
+                        marginTop: 6,
+                      }}
+                    >
+                      · {item.description}
+                      {item.qty ? (
+                        <span style={{ color: 'var(--mute-lt)' }}>
+                          {' '}
+                          ({item.qty} {item.uom})
+                        </span>
+                      ) : null}
                     </div>
-                    <div className="flex gap-1 flex-wrap justify-end">
-                      {['new','offer_sent','negotiation','order_received','lost'].filter(s => s !== e.status).map(s => (
-                        <button key={s} onClick={() => updateStatus(e.id, s)} className="text-xs border border-gray-200 text-gray-500 px-2 py-0.5 rounded hover:bg-gray-50">{s.replace(/_/g, ' ')}</button>
+                  ))}
+                </div>
+                <div className="flex flex-col items-end gap-2 shrink-0">
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="secondary"
+                      leadingIcon={<Plus size={12} />}
+                      onClick={() => setSelectedEnquiry(e)}
+                    >
+                      Offer
+                    </Button>
+                    {isSuperAdmin() && (
+                      <button
+                        onClick={() => deleteEnquiry(e.id, e.customer_name)}
+                        className="p-1.5"
+                        style={{ color: 'var(--mute-lt)' }}
+                        title="Delete enquiry"
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex flex-wrap gap-1 justify-end">
+                    {['new', 'offer_sent', 'negotiation', 'order_received', 'lost']
+                      .filter((s) => s !== e.status)
+                      .map((s) => (
+                        <button
+                          key={s}
+                          onClick={() => updateStatus(e.id, s)}
+                          className="uppercase"
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: 10,
+                            letterSpacing: '.12em',
+                            padding: '4px 8px',
+                            color: 'var(--mute-lt)',
+                            background: 'transparent',
+                            border: '1px solid var(--rule-lt-md)',
+                          }}
+                        >
+                          {humanize(s)}
+                        </button>
                       ))}
-                    </div>
                   </div>
                 </div>
-                {(e.offers || []).length > 0 && (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    {e.offers!.map((o: Offer) => (
-                      <button key={o.id} onClick={() => setViewOffer(o.id)} className="flex items-center gap-1 text-xs border border-blue-200 text-blue-600 px-2 py-1 rounded hover:bg-blue-50">
-                        <Eye size={12} /> {o.offer_no} <span className="text-gray-400">({o.status})</span>
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
-            ))}
-            {enquiries.length === 0 && <p className="text-center text-gray-400 py-8">No enquiries found</p>}
-          </div>
+
+              {(e.offers || []).length > 0 && (
+                <div className="mt-4 space-y-2">
+                  <MonoEyebrow tone="mute">Offers ({e.offers!.length})</MonoEyebrow>
+                  {e.offers!.map((o: Offer) => (
+                    <div key={o.id} className="flex items-center gap-2 flex-wrap">
+                      <button
+                        onClick={() => setViewOffer(o.id)}
+                        className="inline-flex items-center gap-1.5"
+                        style={{
+                          padding: '4px 10px',
+                          background: 'rgba(217,114,71,.08)',
+                          color: 'var(--color-warm-dk)',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 11,
+                          fontWeight: 600,
+                          letterSpacing: '.08em',
+                        }}
+                      >
+                        <Eye size={12} /> {o.offer_no}
+                      </button>
+                      <StatusPill kind={statusMap.offer(o.status)} label={humanize(o.status)} />
+                      <div className="flex flex-wrap gap-1">
+                        {['draft', 'sent', 'accepted', 'rejected', 'revised']
+                          .filter((s) => s !== o.status)
+                          .map((s) => (
+                            <button
+                              key={s}
+                              onClick={() => updateOfferStatus(o.id, s)}
+                              className="uppercase"
+                              style={{
+                                fontFamily: 'var(--font-mono)',
+                                fontSize: 10,
+                                letterSpacing: '.12em',
+                                padding: '3px 7px',
+                                color: 'var(--mute-lt)',
+                                background: 'transparent',
+                                border: '1px solid var(--rule-lt-md)',
+                              }}
+                              title={`Mark as ${humanize(s)}`}
+                            >
+                              {humanize(s)}
+                            </button>
+                          ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          ))
         )}
       </div>
 
-      {showCreate && <CreateEnquiryModal onClose={() => setShowCreate(false)} onSuccess={() => { setShowCreate(false); qc.invalidateQueries({ queryKey: ['enquiries'] }); toast.success('Enquiry saved') }} />}
-      {selectedEnquiry && <CreateOfferModal enquiry={selectedEnquiry} onClose={() => setSelectedEnquiry(null)} onSuccess={() => { setSelectedEnquiry(null); qc.invalidateQueries({ queryKey: ['enquiries'] }); toast.success('Offer created') }} />}
+      {showCreate && (
+        <CreateEnquiryModal
+          onClose={() => setShowCreate(false)}
+          onSuccess={() => {
+            setShowCreate(false)
+            qc.invalidateQueries({ queryKey: ['enquiries'] })
+            toast.success('Enquiry saved')
+          }}
+        />
+      )}
+      {selectedEnquiry && (
+        <CreateOfferModal
+          enquiry={selectedEnquiry}
+          onClose={() => setSelectedEnquiry(null)}
+          onSuccess={() => {
+            setSelectedEnquiry(null)
+            qc.invalidateQueries({ queryKey: ['enquiries'] })
+            toast.success('Offer created')
+          }}
+        />
+      )}
       {viewOffer && <OfferDocument offerId={viewOffer} onClose={() => setViewOffer(null)} />}
     </div>
   )

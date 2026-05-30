@@ -15,6 +15,7 @@ export async function getEnquiries(req: AuthRequest, res: Response) {
     const enquiries = await executeQuery(sql, params)
     for (const e of enquiries as any[]) {
       e.items = await executeQuery('SELECT * FROM enquiry_items WHERE enquiry_id = ?', [e.id])
+      e.offers = await executeQuery('SELECT id, offer_no, offer_date, status FROM offers WHERE enquiry_id = ? ORDER BY created_at DESC', [e.id])
     }
     res.json({ success: true, data: enquiries })
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
@@ -24,7 +25,7 @@ export async function createEnquiry(req: AuthRequest, res: Response) {
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
-    const { brand_id, customer_name, contact_person, mobile, email, customer_city, source, due_date, notes, assigned_to, items } = req.body
+    const { brand_id, customer_name, contact_person, customer_address, mobile, email, customer_city, source, due_date, notes, assigned_to, items } = req.body
     const effectiveBrandId = Number(brand_id || req.brandId)
     if (!effectiveBrandId || !req.userBrandIds!.includes(effectiveBrandId)) {
       conn.release()
@@ -32,8 +33,8 @@ export async function createEnquiry(req: AuthRequest, res: Response) {
     }
     const enquiry_no = await getNextDocumentNumber(effectiveBrandId, 'AEPL/ENQ')
     const [result] = await conn.execute(
-      'INSERT INTO enquiries (brand_id, enquiry_no, assigned_to, customer_name, contact_person, mobile, email, customer_city, source, due_date, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
-      [effectiveBrandId, enquiry_no, assigned_to || null, customer_name, contact_person, mobile, email, customer_city, source || 'phone', due_date || null, notes]
+      'INSERT INTO enquiries (brand_id, enquiry_no, assigned_to, customer_name, contact_person, customer_address, mobile, email, customer_city, source, due_date, notes) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+      [effectiveBrandId, enquiry_no, assigned_to || null, customer_name, contact_person, customer_address || null, mobile, email, customer_city, source || 'phone', due_date || null, notes]
     ) as any[]
     const enquiryId = result.insertId
     for (const item of (items || [])) {

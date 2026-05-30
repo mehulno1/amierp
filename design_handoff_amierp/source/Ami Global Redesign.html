@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Ami Global — Redesign Explorations</title>
+
+<!-- Type pairings used across the three directions -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Serif:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Instrument+Serif&family=Inter+Tight:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+
+<style>
+  html, body { margin:0; padding:0; background:#f0eee9; font-family: 'Inter Tight', -apple-system, sans-serif; }
+  * { box-sizing: border-box; }
+  /* Universal photo placeholder helper (used inside artboards) */
+  .ph-fallback {
+    background-image:
+      linear-gradient(135deg, rgba(255,255,255,.04) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.04) 50%, rgba(255,255,255,.04) 75%, transparent 75%);
+    background-size: 14px 14px;
+  }
+</style>
+
+<!-- React + Babel (pinned) -->
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+
+<script type="text/babel" src="design-canvas.jsx"></script>
+<script type="text/babel" src="shared.jsx"></script>
+<script type="text/babel" src="direction-a.jsx"></script>
+<script type="text/babel" src="direction-b.jsx"></script>
+<script type="text/babel" src="direction-c.jsx"></script>
+<script type="text/babel" src="subpages-a.jsx"></script>
+<script type="text/babel" src="erp-a.jsx"></script>
+
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { DesignCanvas, DCSection, DCArtboard, DCPostIt } = window;
+const { HomeA, HomeB, HomeC, AboutA, ContactA, SubCoA, LoginA, DashboardA, SalesA, RequisitionsA, CrmA, InventoryA } = window;
+
+const W = 1440;
+const H_HOME = 3600;
+const H_PAGE = 2400;
+const H_APP = 980;
+
+function App() {
+  return (
+    <DesignCanvas defaultZoom={0.35}>
+      <DCSection id="intro" title="Ami Global · Redesign Explorations" subtitle="3 homepage directions in the same industrial heavy-engineering vocabulary — then the lead direction extended across marketing sub-pages and the full ERP suite.">
+        <DCPostIt>
+          <b>What you're looking at</b><br/>
+          Row 1: three full homepage scrolls side-by-side.<br/>
+          Row 2: About / Contact / Sub-company in Direction A.<br/>
+          Row 3: ERP login, dashboard, and four modules.<br/><br/>
+          Double-click any artboard label to rename.
+          Click the expand icon to view fullscreen.
+        </DCPostIt>
+      </DCSection>
+
+      <DCSection id="home" title="01 · Homepage" subtitle="Each artboard is a full-page scroll. The nav login is inline (top-right).">
+        <DCArtboard id="home-a" label="A · Heritage Industrial" width={W} height={H_HOME}>
+          <HomeA/>
+        </DCArtboard>
+        <DCArtboard id="home-b" label="B · Editorial Bold" width={W} height={H_HOME}>
+          <HomeB/>
+        </DCArtboard>
+        <DCArtboard id="home-c" label="C · Technical Blueprint" width={W} height={H_HOME}>
+          <HomeC/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="marketing" title="02 · Marketing sub-pages (Direction A)" subtitle="About, Contact, and a representative sub-company page using the Heritage Industrial system.">
+        <DCArtboard id="about-a" label="About Us" width={W} height={H_PAGE}>
+          <AboutA/>
+        </DCArtboard>
+        <DCArtboard id="contact-a" label="Contact" width={W} height={1800}>
+          <ContactA/>
+        </DCArtboard>
+        <DCArtboard id="subco-a" label="Sub-company · Ami Pipes" width={W} height={H_PAGE}>
+          <SubCoA/>
+        </DCArtboard>
+      </DCSection>
+
+      <DCSection id="erp" title="03 · ERP suite (Direction A)" subtitle="Login + dashboard overview + four modules. Same type & color system, denser layout.">
+        <DCArtboard id="erp-login" label="Login" width={W} height={H_APP}>
+          <LoginA/>
+        </DCArtboard>
+        <DCArtboard id="erp-dash" label="Dashboard · Overview" width={W} height={1100}>
+          <DashboardA/>
+        </DCArtboard>
+        <DCArtboard id="erp-sales" label="Sales · Quotations" width={W} height={1100}>
+          <SalesA/>
+        </DCArtboard>
+        <DCArtboard id="erp-req" label="Requisitions" width={W} height={1100}>
+          <RequisitionsA/>
+        </DCArtboard>
+        <DCArtboard id="erp-crm" label="CRM · Enquiries" width={W} height={1100}>
+          <CrmA/>
+        </DCArtboard>
+        <DCArtboard id="erp-inv" label="Inventory + Raw Material" width={W} height={1100}>
+          <InventoryA/>
+        </DCArtboard>
+      </DCSection>
+    </DesignCanvas>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+
+</body>
+</html>

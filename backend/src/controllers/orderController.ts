@@ -63,16 +63,26 @@ export async function createOrder(req: AuthRequest, res: Response) {
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
-    const { brand_id, client_id, order_type, delivery_mode, delivery_date, order_date, notes, items, po_no, po_date, gst_type } = req.body
+    const { brand_id, client_id, order_type, delivery_mode, delivery_date, order_date, notes, items, po_no, po_date, gst_type, bank_id } = req.body
     const effectiveBrandId = Number(brand_id || req.brandId)
     if (!effectiveBrandId || !req.userBrandIds!.includes(effectiveBrandId)) {
       conn.release()
       return res.status(400).json({ success: false, error: 'Valid company required' })
     }
+    // Resolve bank: explicit selection wins; otherwise fall back to the brand's default bank
+    // so PI generation never produces a row with empty bank fields.
+    let resolvedBankId: number | null = bank_id ? Number(bank_id) : null
+    if (resolvedBankId) {
+      const ok = await executeQuery<any>('SELECT id FROM brand_banks WHERE id = ? AND brand_id = ? AND is_active = 1', [resolvedBankId, effectiveBrandId])
+      if (!ok.length) { conn.release(); return res.status(400).json({ success: false, error: 'Invalid bank for selected company' }) }
+    } else {
+      const def = await executeQuery<any>('SELECT id FROM brand_banks WHERE brand_id = ? AND is_active = 1 ORDER BY is_default DESC, id LIMIT 1', [effectiveBrandId])
+      resolvedBankId = def[0]?.id ?? null
+    }
     const order_id = generateOrderId()
     const [result] = await conn.execute(
-      'INSERT INTO new_orders (brand_id, order_id, client_id, order_type, delivery_mode, delivery_date, order_date, notes, prepared_by, gst_type) VALUES (?,?,?,?,?,?,?,?,?,?)',
-      [effectiveBrandId, order_id, client_id, order_type || 'domestic', delivery_mode ?? null, delivery_date || null, order_date, notes ?? null, req.user!.id, gst_type || 'cgst_sgst']
+      'INSERT INTO new_orders (brand_id, order_id, client_id, order_type, delivery_mode, delivery_date, order_date, notes, prepared_by, gst_type, bank_id) VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+      [effectiveBrandId, order_id, client_id, order_type || 'domestic', delivery_mode ?? null, delivery_date || null, order_date, notes ?? null, req.user!.id, gst_type || 'cgst_sgst', resolvedBankId]
     ) as any[]
     const orderId = result.insertId
 
@@ -89,7 +99,7 @@ export async function createOrder(req: AuthRequest, res: Response) {
 
     // Auto-generate PI
     const { generatePI } = await import('./proformaInvoiceController')
-    await generatePI({ brandId: effectiveBrandId, userId: req.user!.id, orderId, po_no, po_date })
+    await generatePI({ brandId: effectiveBrandId, userId: req.user!.id, orderId, po_no, po_date, bank_id: resolvedBankId ?? undefined })
 
     const order = await getOrderById(orderId, effectiveBrandId)
     res.status(201).json({ success: true, data: order })
@@ -103,7 +113,7 @@ export async function createOrder(req: AuthRequest, res: Response) {
 export async function updateOrder(req: AuthRequest, res: Response) {
   try {
     const { id } = req.params
-    const { status, delivery_mode, delivery_date, notes } = req.body
+    const { status, delivery_mode, delivery_date, notes, order_type, gst_type } = req.body
     const ids = req.userBrandIds!
     const sets: string[] = []
     const vals: any[] = []
@@ -111,6 +121,8 @@ export async function updateOrder(req: AuthRequest, res: Response) {
     if (delivery_mode !== undefined) { sets.push('delivery_mode=?'); vals.push(delivery_mode ?? null) }
     if (delivery_date !== undefined) { sets.push('delivery_date=?'); vals.push(delivery_date || null) }
     if (notes !== undefined) { sets.push('notes=?'); vals.push(notes ?? null) }
+    if (order_type !== undefined) { sets.push('order_type=?'); vals.push(order_type || 'domestic') }
+    if (gst_type !== undefined) { sets.push('gst_type=?'); vals.push(gst_type || 'cgst_sgst') }
     if (!sets.length) return res.json({ success: true, message: 'Nothing to update' })
     await executeQuery(
       `UPDATE new_orders SET ${sets.join(', ')} WHERE id=? AND brand_id IN (${ids.map(() => '?').join(',')})`,

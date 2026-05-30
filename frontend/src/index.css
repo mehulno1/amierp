@@ -1,13 +1,45 @@
 @import "tailwindcss";
 
+@theme {
+  --color-ink: #0d1117;
+  --color-ink-soft: #1a1410;
+  --color-paper: #f5f1ea;
+  --color-paper-alt: #ece6d8;
+  --color-warm: #d97247;
+  --color-warm-dk: #c25a30;
+  --color-success: #5fb56f;
+  --color-danger: #b6432f;
+  --color-info: #2563a8;
+
+  --font-serif: "IBM Plex Serif", Georgia, serif;
+  --font-sans: "IBM Plex Sans", -apple-system, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", monospace;
+
+  --radius-none: 0px;
+  --radius-sm: 2px;
+  --radius-md: 4px;
+}
+
+:root {
+  --rule: rgba(245, 241, 234, 0.12);
+  --rule-lt: rgba(20, 15, 10, 0.10);
+  --rule-lt-md: rgba(20, 15, 10, 0.25);
+  --rule-lt-strong: rgba(20, 15, 10, 0.30);
+  --mute: rgba(245, 241, 234, 0.65);
+  --mute-lt: rgba(20, 15, 10, 0.55);
+}
+
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  font-family: system-ui, -apple-system, sans-serif;
-  background-color: #f9fafb;
+  font-family: var(--font-sans);
+  background-color: var(--color-paper);
+  color: var(--color-ink);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 #root {
@@ -16,6 +48,7 @@ body {
 }
 
 @layer components {
+  /* Legacy utility classes — retained so untouched pages keep rendering until they are migrated. */
   .btn-primary {
     @apply bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors font-medium text-sm;
   }

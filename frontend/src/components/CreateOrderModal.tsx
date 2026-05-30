@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useForm, useFieldArray, useWatch } from 'react-hook-form'
-import { ordersApi } from '../services/api'
+import { useQuery } from '@tanstack/react-query'
+import { ordersApi, brandsApi } from '../services/api'
 import { X, Plus, Trash2 } from 'lucide-react'
 import type { Client, Product, ProductVariant, Brand } from '../types'
 import toast from 'react-hot-toast'
@@ -21,9 +22,10 @@ interface ItemRowProps {
   remove: () => void
   showRemove: boolean
   brandFilteredProducts: Product[]
+  currency: string
 }
 
-function OrderItemRow({ index, control, register, setValue, remove, showRemove, brandFilteredProducts }: ItemRowProps) {
+function OrderItemRow({ index, control, register, setValue, remove, showRemove, brandFilteredProducts, currency }: ItemRowProps) {
   const [selectedProductId, setSelectedProductId] = useState<number | null>(null)
   const [selectedVariantId, setSelectedVariantId] = useState<string>('')
 
@@ -122,11 +124,11 @@ function OrderItemRow({ index, control, register, setValue, remove, showRemove, 
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Rate</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Rate ({currency})</label>
           <input type="number" min="0" step="0.01" className="input-field" {...register(`items.${index}.rate`)} />
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Total</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Total ({currency})</label>
           <input type="number" readOnly className="input-field bg-gray-50 cursor-default" {...register(`items.${index}.total`)} />
         </div>
       </div>
@@ -150,6 +152,7 @@ export default function CreateOrderModal({ brands, clients, products, onClose, o
     defaultValues: {
       brand_id: defaultBrandId,
       client_id: '',
+      bank_id: '',
       order_type: 'domestic',
       gst_type: 'cgst_sgst',
       order_date: new Date().toISOString().split('T')[0],
@@ -162,9 +165,24 @@ export default function CreateOrderModal({ brands, clients, products, onClose, o
     }
   })
 
+  const currency = watch('order_type') === 'export' ? '$' : '₹'
   const selectedBrandId = parseInt(watch('brand_id') || '0')
   const filteredClients = selectedBrandId ? clients.filter(c => c.brand_id === selectedBrandId) : clients
   const brandFilteredProducts = products.filter(p => !selectedBrandId || p.brand_id === selectedBrandId)
+
+  // Banks list for the selected company. We refetch on brand change and pre-select the
+  // default bank so the PI gets sensible defaults even if the user doesn't open the dropdown.
+  const { data: banks = [] } = useQuery({
+    queryKey: ['brand-banks', selectedBrandId],
+    queryFn: () => brandsApi.listBanks(selectedBrandId).then(r => r.data.data),
+    enabled: !!selectedBrandId,
+  })
+
+  useEffect(() => {
+    if (!banks.length) { setValue('bank_id', ''); return }
+    const def = banks.find((b: any) => b.is_default) || banks[0]
+    setValue('bank_id', String(def.id))
+  }, [banks, setValue])
 
   const { fields, append, remove } = useFieldArray({ control, name: 'items' })
 
@@ -179,7 +197,13 @@ export default function CreateOrderModal({ brands, clients, products, onClose, o
         rate: parseFloat(item.rate) || 0,
         total: parseFloat(item.total) || 0,
       }))
-      await ordersApi.create({ ...values, brand_id: parseInt(values.brand_id), client_id: parseInt(values.client_id), items })
+      await ordersApi.create({
+        ...values,
+        brand_id: parseInt(values.brand_id),
+        client_id: parseInt(values.client_id),
+        bank_id: values.bank_id ? parseInt(values.bank_id) : null,
+        items,
+      })
       onSuccess()
     } catch (err: any) {
       toast.error(err.response?.data?.error || 'Failed to create order')
@@ -212,6 +236,21 @@ export default function CreateOrderModal({ brands, clients, products, onClose, o
                 {filteredClients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
               </select>
             </div>
+            <div className="col-span-2">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Bank Account for PI *</label>
+              <select className="input-field" {...register('bank_id', { required: banks.length > 0 })} disabled={!banks.length}>
+                {banks.length === 0 ? (
+                  <option value="">— add a bank under System Admin → Companies —</option>
+                ) : (
+                  banks.map((b: any) => (
+                    <option key={b.id} value={b.id}>
+                      {b.bank_name} • {b.account_no}{b.is_default ? ' (default)' : ''}
+                    </option>
+                  ))
+                )}
+              </select>
+              <p className="text-xs text-gray-500 mt-1">Selected bank details will be printed on the proforma invoice.</p>
+            </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Order Type</label>
               <select className="input-field" {...register('order_type')}>
@@ -224,6 +263,7 @@ export default function CreateOrderModal({ brands, clients, products, onClose, o
               <select className="input-field" {...register('gst_type')}>
                 <option value="cgst_sgst">CGST 9% + SGST 9% (Intra-state)</option>
                 <option value="igst">IGST 18% (Inter-state / Export)</option>
+                <option value="none">GST - 0%</option>
               </select>
             </div>
             <div>
@@ -271,6 +311,7 @@ export default function CreateOrderModal({ brands, clients, products, onClose, o
                   remove={() => remove(idx)}
                   showRemove={fields.length > 1}
                   brandFilteredProducts={brandFilteredProducts}
+                  currency={currency}
                 />
               ))}
             </div>

@@ -22,8 +22,9 @@ export async function getOffer(req: AuthRequest, res: Response) {
     const { id } = req.params
     const ids = req.brandId ? [req.brandId] : req.userBrandIds!
     const offers = await executeQuery<any>(
-      `SELECT o.*, e.customer_name, e.contact_person, e.email as customer_email, e.customer_city, e.enquiry_no, e.mobile
-       FROM offers o JOIN enquiries e ON o.enquiry_id = e.id WHERE o.id = ? AND o.brand_id IN (${ids.map(() => '?').join(',')})`,
+      `SELECT o.*, e.customer_name, e.contact_person, e.customer_address, e.email as customer_email, e.customer_city, COALESCE(o.enquiry_no_override, e.enquiry_no) as enquiry_no, e.mobile,
+              b.name as brand_name, b.address as brand_address, b.phone as brand_phone, b.email as brand_email, b.gstin as brand_gstin, b.pan as brand_pan
+       FROM offers o JOIN enquiries e ON o.enquiry_id = e.id JOIN brands b ON o.brand_id = b.id WHERE o.id = ? AND o.brand_id IN (${ids.map(() => '?').join(',')})`,
       [id, ...ids]
     )
     if (!offers.length) return res.status(404).json({ success: false, error: 'Not found' })
@@ -37,7 +38,7 @@ export async function createOffer(req: AuthRequest, res: Response) {
   const conn = await pool.getConnection()
   try {
     await conn.beginTransaction()
-    const { enquiry_id, offer_date, validity_date, terms_gst, terms_price_validity, terms_delivery,
+    const { enquiry_id, enquiry_no, offer_date, validity_date, terms_gst, terms_price_validity, terms_delivery,
       terms_supply_basis, terms_weight_tolerance, terms_force_majure, terms_payment, notes, items } = req.body
 
     // Derive brand from the parent enquiry
@@ -51,9 +52,9 @@ export async function createOffer(req: AuthRequest, res: Response) {
     const offer_no = await getNextDocumentNumber(effectiveBrandId, 'AEPL/OFF')
 
     const [result] = await conn.execute(
-      `INSERT INTO offers (brand_id, offer_no, enquiry_id, offer_date, validity_date, terms_gst, terms_price_validity, terms_delivery, terms_supply_basis, terms_weight_tolerance, terms_force_majure, terms_payment, notes, created_by)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-      [effectiveBrandId, offer_no, enquiry_id, offer_date, validity_date || null, terms_gst, terms_price_validity, terms_delivery, terms_supply_basis, terms_weight_tolerance, terms_force_majure, terms_payment, notes, req.user!.id]
+      `INSERT INTO offers (brand_id, offer_no, enquiry_id, enquiry_no_override, offer_date, validity_date, terms_gst, terms_price_validity, terms_delivery, terms_supply_basis, terms_weight_tolerance, terms_force_majure, terms_payment, notes, created_by)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [effectiveBrandId, offer_no, enquiry_id, enquiry_no || null, offer_date, validity_date || null, terms_gst, terms_price_validity, terms_delivery, terms_supply_basis, terms_weight_tolerance, terms_force_majure, terms_payment, notes, req.user!.id]
     ) as any[]
     const offerId = result.insertId
 
@@ -69,6 +70,29 @@ export async function createOffer(req: AuthRequest, res: Response) {
     await conn.rollback(); conn.release()
     res.status(500).json({ success: false, error: err.message })
   }
+}
+
+export async function updateOfferStatus(req: AuthRequest, res: Response) {
+  try {
+    const { id } = req.params
+    const { status } = req.body
+    const allowed = ['draft', 'sent', 'accepted', 'rejected', 'revised']
+    if (!allowed.includes(status)) {
+      return res.status(400).json({ success: false, error: 'Invalid status' })
+    }
+    const ids = req.userBrandIds!
+    const result = await executeQuery<any>(
+      `UPDATE offers SET status = ? WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`,
+      [status, id, ...ids]
+    )
+    if (status === 'accepted') {
+      const rows = await executeQuery<any>('SELECT enquiry_id FROM offers WHERE id = ?', [id])
+      if (rows.length) {
+        await executeQuery("UPDATE enquiries SET status = 'order_received' WHERE id = ?", [rows[0].enquiry_id])
+      }
+    }
+    res.json({ success: true, message: 'Status updated', data: result })
+  } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
 }
 
 export async function sendOffer(req: AuthRequest, res: Response) {

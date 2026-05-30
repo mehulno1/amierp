@@ -11,6 +11,7 @@ import LoadingSpinner from '../components/LoadingSpinner'
 import CreateOrderModal from '../components/CreateOrderModal'
 import PIDocument from '../components/PIDocument'
 import * as XLSX from 'xlsx'
+import { fmtDate } from '../utils/formatDate'
 
 const statusColors: Record<string, string> = {
   new_order: 'bg-blue-100 text-blue-700',
@@ -19,13 +20,6 @@ const statusColors: Record<string, string> = {
   dispatched: 'bg-purple-100 text-purple-700',
   completed: 'bg-green-100 text-green-700',
   cancelled: 'bg-red-100 text-red-700',
-}
-
-function fmtDate(d: string | null | undefined) {
-  if (!d) return '—'
-  const part = d.split('T')[0]
-  const [y, m, day] = part.split('-')
-  return `${day}/${m}/${y}`
 }
 
 export default function Orders() {

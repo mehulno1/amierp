@@ -162,6 +162,7 @@ function OrderDetailsCard({ order, id, isAdmin, editing, setEditing, onSaved }: 
     delivery_date: order.delivery_date ? new Date(order.delivery_date).toISOString().split('T')[0] : '',
     delivery_mode: order.delivery_mode || '',
     order_type: order.order_type || 'domestic',
+    gst_type: order.gst_type || 'cgst_sgst',
     notes: order.notes || '',
   })
   const [saving, setSaving] = useState(false)
@@ -196,6 +197,12 @@ function OrderDetailsCard({ order, id, isAdmin, editing, setEditing, onSaved }: 
               <option value="domestic">Domestic</option>
               <option value="export">Export</option>
             </select></div>
+          <div><label className="block text-gray-500 mb-1">GST Type</label>
+            <select className="input-field" value={form.gst_type} onChange={e => setForm(f => ({ ...f, gst_type: e.target.value }))}>
+              <option value="cgst_sgst">CGST 9% + SGST 9% (Intra-state)</option>
+              <option value="igst">IGST 18% (Inter-state / Export)</option>
+              <option value="none">GST - 0%</option>
+            </select></div>
           <div><label className="block text-gray-500 mb-1">Notes</label>
             <textarea className="input-field" rows={2} value={form.notes} onChange={e => setForm(f => ({ ...f, notes: e.target.value }))} /></div>
           <div className="flex gap-2 pt-1">
@@ -219,6 +226,7 @@ function OrderDetailsCard({ order, id, isAdmin, editing, setEditing, onSaved }: 
         <div className="flex justify-between"><dt className="text-gray-500">Delivery Date</dt><dd>{fmt(order.delivery_date)}</dd></div>
         <div className="flex justify-between"><dt className="text-gray-500">Delivery Mode</dt><dd>{order.delivery_mode || '—'}</dd></div>
         <div className="flex justify-between"><dt className="text-gray-500">Order Type</dt><dd className="capitalize">{order.order_type}</dd></div>
+        <div className="flex justify-between"><dt className="text-gray-500">GST Type</dt><dd>{order.gst_type === 'none' ? 'GST 0%' : order.gst_type === 'igst' ? 'IGST 18%' : 'CGST + SGST'}</dd></div>
         {order.notes && <div className="flex justify-between"><dt className="text-gray-500">Notes</dt><dd className="text-right max-w-xs">{order.notes}</dd></div>}
       </dl>
     </div>

@@ -1,7 +1,7 @@
 import { useState, useMemo } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { inventoryApi } from '../services/api'
-import { Plus, Settings2, Clock, Download, Search, Package, AlertTriangle, XCircle, RefreshCw } from 'lucide-react'
+import { Plus, Settings2, Clock, Download, Search, RefreshCw, Edit2 } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { useForm } from 'react-hook-form'
 import toast from 'react-hot-toast'
@@ -10,30 +10,32 @@ import type { InventoryItem, InventoryType } from '../types'
 import { useSortable } from '../hooks/useSortable'
 import { SortIcon, thSort } from '../components/SortIcon'
 import * as XLSX from 'xlsx'
+import PageHeader from '../components/ui/PageHeader'
+import Button from '../components/ui/Button'
+import MetricCard from '../components/ui/MetricCard'
+import StatusPill from '../components/ui/StatusPill'
+import { fmtDate } from '../utils/formatDate'
 
-const TYPES: { value: InventoryType; label: string; emoji: string }[] = [
-  { value: 'finished_goods', label: 'Finished Goods', emoji: '📦' },
-  { value: 'raw_material', label: 'Raw Materials', emoji: '🧱' },
-  { value: 'spare_parts', label: 'Spare Parts', emoji: '🔧' },
+const TYPES: { value: InventoryType; label: string }[] = [
+  { value: 'finished_goods', label: 'Finished goods' },
+  { value: 'raw_material', label: 'Raw materials' },
+  { value: 'spare_parts', label: 'Spare parts' },
 ]
 
 const UOM_OPTIONS = ['pcs', 'kgs', 'gms', 'mtr', 'ltr', 'ml', 'nos', 'set']
-
-function fmtDate(d: string | null | undefined) {
-  if (!d) return '—'
-  return new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: '2-digit', year: 'numeric' }).replace(/\//g, '/')
-}
 
 function fmtQty(val: any) {
   const n = parseFloat(String(val || 0))
   return n % 1 === 0 ? String(n) : n.toFixed(3)
 }
 
-function getStatus(item: InventoryItem & { reserved_stock: number }) {
+type StockState = 'low' | 'out' | 'ok'
+
+function getStockState(item: InventoryItem & { reserved_stock: number }): StockState {
   const avail = Number(item.current_stock) - Number(item.reserved_stock)
-  if (avail <= 0) return { label: 'Out of Stock', cls: 'bg-red-100 text-red-700 border border-red-200' }
-  if (item.minimum_stock && avail < Number(item.minimum_stock)) return { label: 'Low Stock', cls: 'bg-yellow-100 text-yellow-700 border border-yellow-200' }
-  return { label: 'In Stock', cls: 'bg-green-100 text-green-700 border border-green-200' }
+  if (avail <= 0) return 'out'
+  if (item.minimum_stock && avail < Number(item.minimum_stock)) return 'low'
+  return 'ok'
 }
 
 const TX_TYPES: Record<string, { label: string; cls: string }> = {
@@ -49,14 +51,27 @@ const TX_TYPES: Record<string, { label: string; cls: string }> = {
 
 function AddItemModal({ activeType, onClose, onSuccess }: { activeType: InventoryType; onClose: () => void; onSuccess: () => void }) {
   const [loading, setLoading] = useState(false)
+  const { brands } = useAuth()
+  // Backend requires either header x-brand-id or body.brand_id to pass requireBrandContext;
+  // include it in the form payload so the request works regardless of header state.
+  const defaultBrandId = brands.length === 1 ? String(brands[0].id) : ''
   const { register, handleSubmit } = useForm({
-    defaultValues: { item_type: activeType, item_name: '', item_code: '', uom: 'pcs', current_stock: 0, minimum_stock: '' }
+    defaultValues: {
+      brand_id: defaultBrandId,
+      item_type: activeType,
+      item_name: '', item_code: '', uom: 'pcs', current_stock: 0, minimum_stock: '',
+    }
   })
 
   const onSubmit = async (data: any) => {
+    if (!data.brand_id) { toast.error('Select a company'); return }
     setLoading(true)
     try {
-      await inventoryApi.create({ ...data, current_stock: parseFloat(data.current_stock) || 0 })
+      await inventoryApi.create({
+        ...data,
+        brand_id: parseInt(data.brand_id),
+        current_stock: parseFloat(data.current_stock) || 0,
+      })
       toast.success('Item added')
       onSuccess()
     } catch (err: any) { toast.error(err.response?.data?.error || 'Failed') }
@@ -73,6 +88,17 @@ function AddItemModal({ activeType, onClose, onSuccess }: { activeType: Inventor
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
         </div>
         <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-4">
+          {brands.length > 1 ? (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Company *</label>
+              <select className="input-field" {...register('brand_id', { required: true })}>
+                <option value="">Select company</option>
+                {brands.map(b => <option key={b.id} value={b.id}>{b.name}</option>)}
+              </select>
+            </div>
+          ) : (
+            <input type="hidden" {...register('brand_id', { required: true })} />
+          )}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Item Name *</label>
             <input className="input-field" placeholder="e.g. Steel Rod 12mm" {...register('item_name', { required: true })} />
@@ -100,6 +126,56 @@ function AddItemModal({ activeType, onClose, onSuccess }: { activeType: Inventor
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose} className="btn-secondary flex-1">Cancel</button>
             <button type="submit" disabled={loading} className="btn-primary flex-1">{loading ? 'Adding...' : 'Add Item'}</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  )
+}
+
+function EditItemModal({ item, onClose, onSuccess }: { item: InventoryItem; onClose: () => void; onSuccess: () => void }) {
+  const [loading, setLoading] = useState(false)
+  const { register, handleSubmit } = useForm({
+    defaultValues: { item_name: item.item_name, item_code: item.item_code || '', uom: item.uom }
+  })
+
+  const onSubmit = async (data: any) => {
+    setLoading(true)
+    try {
+      await inventoryApi.update(item.id, data)
+      toast.success('Item updated')
+      onSuccess()
+    } catch (err: any) { toast.error(err.response?.data?.error || 'Failed') }
+    finally { setLoading(false) }
+  }
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+        <div className="flex items-center justify-between p-5 border-b">
+          <h2 className="text-base font-semibold text-gray-900">Edit Item</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
+        </div>
+        <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Item Name *</label>
+            <input className="input-field" {...register('item_name', { required: true })} />
+          </div>
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Item Code</label>
+              <input className="input-field" {...register('item_code')} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">UOM *</label>
+              <select className="input-field" {...register('uom')}>
+                {UOM_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
+              </select>
+            </div>
+          </div>
+          <div className="flex gap-3 pt-1">
+            <button type="button" onClick={onClose} className="btn-secondary flex-1">Cancel</button>
+            <button type="submit" disabled={loading} className="btn-primary flex-1">{loading ? 'Saving...' : 'Save Changes'}</button>
           </div>
         </form>
       </div>
@@ -278,6 +354,7 @@ export default function Inventory() {
   const [search, setSearch] = useState('')
   const [stockFilter, setStockFilter] = useState<'all' | 'low' | 'out'>('all')
   const [showAdd, setShowAdd] = useState(false)
+  const [editItem, setEditItem] = useState<InventoryItem | null>(null)
   const [adjustItem, setAdjustItem] = useState<InventoryItem | null>(null)
   const [levelsItem, setLevelsItem] = useState<InventoryItem | null>(null)
   const [historyItem, setHistoryItem] = useState<InventoryItem | null>(null)
@@ -337,146 +414,353 @@ export default function Inventory() {
     qc.invalidateQueries({ queryKey: ['inventory', activeType] })
   }
 
+  const stockLevel = (i: InventoryItem & { reserved_stock: number }) => {
+    const min = Number(i.minimum_stock || 0)
+    const max = Number(i.maximum_stock || 0)
+    const cur = Number(i.current_stock)
+    const ref = max > 0 ? max : Math.max(min * 2, 1)
+    return Math.max(0, Math.min(100, (cur / ref) * 100))
+  }
+
   return (
-    <div className="space-y-5">
-      {/* Header */}
-      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Inventory Management</h1>
-          <p className="text-sm text-gray-500 mt-0.5">Track and manage stock levels for all inventory types</p>
-        </div>
-        <div className="flex flex-wrap gap-2">
-          {activeType !== 'finished_goods' && isAdmin() && (
-            <button onClick={() => setShowAdd(true)} className="btn-primary flex items-center justify-center gap-2 text-sm flex-1 sm:flex-initial"><Plus size={14} />Add Item</button>
-          )}
-          <button onClick={exportExcel} className="btn-secondary flex items-center justify-center gap-2 text-sm flex-1 sm:flex-initial"><Download size={14} />Export CSV</button>
-          <button onClick={() => refetch()} disabled={isLoading} className="btn-secondary flex items-center justify-center gap-2 text-sm flex-1 sm:flex-initial">
-            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />Refresh
-          </button>
-        </div>
-      </div>
+    <div>
+      <PageHeader
+        breadcrumb={['Ami Enterprises', 'Inventory', TYPES.find(t => t.value === activeType)?.label ?? '']}
+        title="Inventory"
+        subtitle="Track and manage stock levels across all categories."
+        actions={
+          <>
+            {activeType !== 'finished_goods' && isAdmin() && (
+              <Button variant="primary" leadingIcon={<Plus size={14} />} onClick={() => setShowAdd(true)}>
+                Add item
+              </Button>
+            )}
+            <Button variant="secondary" leadingIcon={<Download size={14} />} onClick={exportExcel}>
+              Export CSV
+            </Button>
+            <Button
+              variant="secondary"
+              leadingIcon={<RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />}
+              onClick={() => refetch()}
+              disabled={isLoading}
+            >
+              Refresh
+            </Button>
+          </>
+        }
+      />
 
       {/* Type Tabs */}
-      <div className="flex gap-2 flex-wrap border-b border-gray-200">
-        {TYPES.map(t => (
-          <button key={t.value} onClick={() => { setActiveType(t.value); setSearch(''); setStockFilter('all') }}
-            className={`flex items-center gap-1.5 px-4 py-2.5 text-sm font-medium border-b-2 transition-colors -mb-px ${
-              activeType === t.value
-                ? 'border-blue-600 text-blue-600'
-                : 'border-transparent text-gray-500 hover:text-gray-700 hover:border-gray-300'
-            }`}>
-            <span>{t.emoji}</span>{t.label}
-          </button>
-        ))}
+      <div
+        className="flex gap-0 mb-5 overflow-x-auto"
+        style={{ borderBottom: '1px solid var(--rule-lt)' }}
+      >
+        {TYPES.map((t) => {
+          const active = activeType === t.value
+          return (
+            <button
+              key={t.value}
+              onClick={() => {
+                setActiveType(t.value)
+                setSearch('')
+                setStockFilter('all')
+              }}
+              className="inline-flex items-center gap-2 whitespace-nowrap"
+              style={{
+                padding: '12px 18px',
+                fontFamily: 'var(--font-sans)',
+                fontSize: 13,
+                fontWeight: 500,
+                color: active ? 'var(--color-ink)' : 'var(--mute-lt)',
+                borderBottom: `2px solid ${active ? 'var(--color-warm)' : 'transparent'}`,
+                background: 'transparent',
+                cursor: 'pointer',
+              }}
+            >
+              {t.label}
+            </button>
+          )
+        })}
       </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
-        <div className="card p-4 bg-green-50 border border-green-200 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-green-800">Total Items</p>
-            <p className="text-3xl font-bold text-green-900">{stats.total}</p>
-          </div>
-          <Package size={32} className="text-green-500" />
-        </div>
-        <div className="card p-4 bg-yellow-50 border border-yellow-200 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-yellow-800">Low Stock Items</p>
-            <p className="text-3xl font-bold text-yellow-900">{stats.low}</p>
-          </div>
-          <AlertTriangle size={32} className="text-yellow-500" />
-        </div>
-        <div className="card p-4 bg-red-50 border border-red-200 flex items-center justify-between">
-          <div>
-            <p className="text-sm font-medium text-red-800">Out of Stock</p>
-            <p className="text-3xl font-bold text-red-900">{stats.out}</p>
-          </div>
-          <XCircle size={32} className="text-red-500" />
-        </div>
+      {/* KPI strip */}
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-5">
+        <MetricCard label="Total items" value={stats.total} sub={TYPES.find((t) => t.value === activeType)?.label} />
+        <MetricCard
+          label="Low stock items"
+          value={stats.low}
+          deltaPositive={false}
+          sub={stats.low > 0 ? 'Restock needed' : 'All within limits'}
+        />
+        <MetricCard
+          label="Out of stock"
+          value={stats.out}
+          deltaPositive={false}
+          sub={stats.out > 0 ? 'Stockout warning' : 'All available'}
+        />
       </div>
 
-      {/* Search + Filter */}
-      <div className="card p-4 flex flex-wrap gap-3 items-center">
+      {/* Search + stock filter */}
+      <div
+        className="flex flex-wrap gap-3 items-center mb-4 p-3"
+        style={{ background: '#fff', border: '1px solid var(--rule-lt)' }}
+      >
         <div className="relative flex-1 min-w-52">
-          <Search size={15} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
-          <input className="input-field pl-9" placeholder="Search by item name or code..." value={search} onChange={e => setSearch(e.target.value)} />
+          <Search
+            size={14}
+            className="absolute left-3 top-1/2 -translate-y-1/2"
+            style={{ color: 'var(--mute-lt)' }}
+          />
+          <input
+            placeholder="Search by item name or code…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="w-full"
+            style={{
+              padding: '10px 12px 10px 34px',
+              background: 'var(--color-paper)',
+              border: '1px solid var(--rule-lt-md)',
+              fontFamily: 'var(--font-sans)',
+              fontSize: 13,
+              outline: 'none',
+            }}
+          />
         </div>
         <div className="flex gap-2">
-          {(['all', 'low', 'out'] as const).map(f => (
-            <button key={f} onClick={() => setStockFilter(f)}
-              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
-                stockFilter === f
-                  ? f === 'all' ? 'bg-blue-600 text-white' : f === 'low' ? 'bg-yellow-500 text-white' : 'bg-red-600 text-white'
-                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-              }`}>
-              {f === 'all' ? 'All' : f === 'low' ? 'Low Stock' : 'Out of Stock'}
-            </button>
-          ))}
+          {(['all', 'low', 'out'] as const).map((f) => {
+            const active = stockFilter === f
+            return (
+              <button
+                key={f}
+                onClick={() => setStockFilter(f)}
+                style={{
+                  padding: '8px 14px',
+                  fontFamily: 'var(--font-sans)',
+                  fontSize: 12,
+                  fontWeight: 500,
+                  background: active ? 'var(--color-ink)' : '#fff',
+                  color: active ? 'var(--color-paper)' : 'var(--mute-lt)',
+                  border: `1px solid ${active ? 'var(--color-ink)' : 'var(--rule-lt-md)'}`,
+                  cursor: 'pointer',
+                }}
+              >
+                {f === 'all' ? 'All' : f === 'low' ? 'Low stock' : 'Out of stock'}
+              </button>
+            )
+          })}
         </div>
       </div>
 
       {/* Table */}
-      <div className="card overflow-hidden">
-        {isLoading ? <LoadingSpinner /> : (
-          <div className="overflow-x-auto -mx-4 sm:mx-0 px-4 sm:px-0">
-            <table className="w-full text-sm min-w-[900px]">
+      <div style={{ background: '#fff', border: '1px solid var(--rule-lt)' }} className="overflow-hidden">
+        {isLoading ? (
+          <LoadingSpinner />
+        ) : (
+          <div className="overflow-x-auto">
+            <table
+              className="w-full"
+              style={{ minWidth: 980, fontFamily: 'var(--font-sans)', fontSize: 13 }}
+            >
               <thead>
-                <tr className="text-left bg-gray-50 border-b border-gray-200">
-                  <th className={thSort + ' px-4 py-3 text-xs uppercase tracking-wider'} onClick={() => toggle('item_name')}>Item Details {si('item_name')}</th>
-                  <th className={thSort + ' px-4 py-3 text-xs uppercase tracking-wider'} onClick={() => toggle('current_stock')}>Current Stock {si('current_stock')}</th>
-                  <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Reserved</th>
-                  <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Available</th>
-                  <th className={thSort + ' px-4 py-3 text-xs uppercase tracking-wider'} onClick={() => toggle('minimum_stock')}>Min / Max {si('minimum_stock')}</th>
-                  <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider">Status</th>
-                  <th className={thSort + ' px-4 py-3 text-xs uppercase tracking-wider'} onClick={() => toggle('updated_at')}>Last Updated {si('updated_at')}</th>
-                  <th className="px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider text-right">Actions</th>
+                <tr
+                  style={{
+                    background: 'var(--color-paper-alt)',
+                    borderBottom: '1px solid var(--rule-lt)',
+                  }}
+                >
+                  {[
+                    { col: 'item_name', label: 'Item', sortable: true },
+                    { col: 'current_stock', label: 'On hand', sortable: true },
+                    { col: '', label: 'Reserved', sortable: false },
+                    { col: '', label: 'Available', sortable: false },
+                    { col: 'minimum_stock', label: 'Min / Max', sortable: true },
+                    { col: '', label: 'Stock level', sortable: false },
+                    { col: '', label: 'Status', sortable: false },
+                    { col: 'updated_at', label: 'Last updated', sortable: true },
+                    { col: '', label: 'Actions', sortable: false, align: 'right' as const },
+                  ].map((h) => (
+                    <th
+                      key={h.label}
+                      onClick={h.sortable ? () => toggle(h.col) : undefined}
+                      className={h.sortable ? thSort : ''}
+                      style={{
+                        padding: '12px 16px',
+                        textAlign: h.align ?? 'left',
+                        fontFamily: 'var(--font-mono)',
+                        fontSize: 10,
+                        letterSpacing: '.18em',
+                        textTransform: 'uppercase',
+                        color: 'var(--mute-lt)',
+                        cursor: h.sortable ? 'pointer' : 'default',
+                      }}
+                    >
+                      {h.label} {h.sortable && si(h.col)}
+                    </th>
+                  ))}
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-100">
+              <tbody>
                 {sorted.map((i: any) => {
                   const reserved = Number(i.reserved_stock)
                   const avail = Number(i.current_stock) - reserved
-                  const status = getStatus(i)
+                  const state = getStockState(i)
+                  const pct = stockLevel(i)
+                  const barColor =
+                    state === 'out'
+                      ? 'var(--color-danger)'
+                      : state === 'low'
+                      ? 'var(--color-warm)'
+                      : 'var(--color-success)'
+                  const pillKind = state === 'out' ? 'overdue' : state === 'low' ? 'low' : 'healthy'
+                  const pillLabel = state === 'out' ? 'Out' : state === 'low' ? 'Reorder' : 'In stock'
+
                   return (
-                    <tr key={i.id} className="hover:bg-gray-50">
-                      <td className="px-4 py-3">
-                        <div className="font-medium text-gray-900">{i.item_name}</div>
-                        {i.item_code && <div className="text-xs text-gray-400 mt-0.5">Code: {i.item_code}</div>}
+                    <tr key={i.id} style={{ borderTop: '1px solid var(--rule-lt)' }}>
+                      <td style={{ padding: '14px 16px' }}>
+                        <div style={{ fontSize: 13, fontWeight: 500 }}>{i.item_name}</div>
+                        {i.item_code && (
+                          <div
+                            style={{
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: 11,
+                              color: 'var(--color-warm-dk)',
+                              fontWeight: 600,
+                              marginTop: 2,
+                            }}
+                          >
+                            {i.item_code}
+                          </div>
+                        )}
                       </td>
-                      <td className="px-4 py-3">
-                        <span className="text-lg font-semibold text-gray-900">{fmtQty(i.current_stock)}</span>
-                        <span className="text-xs text-gray-400 ml-1">{i.uom}</span>
+                      <td style={{ padding: '14px 16px' }}>
+                        <span
+                          style={{
+                            fontFamily: 'var(--font-serif)',
+                            fontSize: 16,
+                            fontWeight: 400,
+                          }}
+                        >
+                          {fmtQty(i.current_stock)}
+                        </span>
+                        <span style={{ fontSize: 11, color: 'var(--mute-lt)', marginLeft: 4 }}>
+                          {i.uom}
+                        </span>
                       </td>
-                      <td className="px-4 py-3">
-                        <span className={`font-medium text-sm ${reserved > 0 ? 'text-orange-600' : 'text-gray-400'}`}>{fmtQty(reserved)}</span>
-                        <div className="text-xs text-gray-400">Reserved</div>
+                      <td
+                        style={{
+                          padding: '14px 16px',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 12,
+                          color: reserved > 0 ? 'var(--color-warm-dk)' : 'var(--mute-lt)',
+                        }}
+                      >
+                        {fmtQty(reserved)}
                       </td>
-                      <td className="px-4 py-3">
-                        <span className={`font-medium text-sm ${avail > 0 ? 'text-green-600' : 'text-red-600'}`}>{fmtQty(avail)} {i.uom}</span>
-                        <div className="text-xs text-gray-400">Available</div>
+                      <td
+                        style={{
+                          padding: '14px 16px',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 12,
+                          fontWeight: 600,
+                          color: avail > 0 ? 'var(--color-success)' : 'var(--color-danger)',
+                        }}
+                      >
+                        {fmtQty(avail)} {i.uom}
                       </td>
-                      <td className="px-4 py-3 text-xs text-gray-500">
+                      <td
+                        style={{
+                          padding: '14px 16px',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 11,
+                          color: 'var(--mute-lt)',
+                        }}
+                      >
                         <div>Min: {i.minimum_stock ? fmtQty(i.minimum_stock) : '—'}</div>
                         <div>Max: {i.maximum_stock ? fmtQty(i.maximum_stock) : 'N/A'}</div>
                       </td>
-                      <td className="px-4 py-3">
-                        <span className={`badge-status ${status.cls} inline-flex items-center gap-1`}>{status.label}</span>
+                      <td style={{ padding: '14px 16px', minWidth: 120 }}>
+                        <div style={{ height: 6, background: 'var(--color-paper-alt)', position: 'relative' }}>
+                          <div style={{ height: '100%', width: `${pct}%`, background: barColor }} />
+                        </div>
+                        <div
+                          style={{
+                            fontFamily: 'var(--font-mono)',
+                            fontSize: 10,
+                            color: 'var(--mute-lt)',
+                            marginTop: 4,
+                          }}
+                        >
+                          {Math.round(pct)}%
+                        </div>
                       </td>
-                      <td className="px-4 py-3 text-xs text-gray-500">{fmtDate(i.updated_at)}</td>
-                      <td className="px-4 py-3">
+                      <td style={{ padding: '14px 16px' }}>
+                        <StatusPill kind={pillKind} label={pillLabel} />
+                      </td>
+                      <td
+                        style={{
+                          padding: '14px 16px',
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 11,
+                          color: 'var(--mute-lt)',
+                        }}
+                      >
+                        {fmtDate(i.updated_at)}
+                      </td>
+                      <td style={{ padding: '14px 16px', textAlign: 'right' }}>
                         <div className="flex items-center gap-2 justify-end">
-                          <button onClick={() => setAdjustItem(i)} title="Adjust Stock" className="p-1.5 rounded-lg text-blue-500 hover:bg-blue-50 hover:text-blue-700"><Plus size={16} /></button>
-                          {isAdmin() && <button onClick={() => setLevelsItem(i)} title="Update Min/Max Levels" className="p-1.5 rounded-lg text-gray-500 hover:bg-gray-100 hover:text-gray-700"><Settings2 size={16} /></button>}
-                          <button onClick={() => setHistoryItem(i)} title="Transaction History" className="p-1.5 rounded-lg text-green-500 hover:bg-green-50 hover:text-green-700"><Clock size={16} /></button>
+                          {isAdmin() && (
+                            <button
+                              onClick={() => setEditItem(i)}
+                              title="Edit Item"
+                              style={{ color: 'var(--color-warm-dk)', padding: 4 }}
+                            >
+                              <Edit2 size={15} />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setAdjustItem(i)}
+                            title="Adjust Stock"
+                            style={{ color: 'var(--color-warm-dk)', padding: 4 }}
+                          >
+                            <Plus size={16} />
+                          </button>
+                          {isAdmin() && (
+                            <button
+                              onClick={() => setLevelsItem(i)}
+                              title="Update Min/Max Levels"
+                              style={{ color: 'var(--mute-lt)', padding: 4 }}
+                            >
+                              <Settings2 size={16} />
+                            </button>
+                          )}
+                          <button
+                            onClick={() => setHistoryItem(i)}
+                            title="Transaction History"
+                            style={{ color: 'var(--mute-lt)', padding: 4 }}
+                          >
+                            <Clock size={16} />
+                          </button>
                         </div>
                       </td>
                     </tr>
                   )
                 })}
                 {sorted.length === 0 && (
-                  <tr><td colSpan={8} className="py-12 text-center text-gray-400">
-                    {search || stockFilter !== 'all' ? 'No items match your filters' : 'No items in this category'}
-                  </td></tr>
+                  <tr>
+                    <td
+                      colSpan={9}
+                      style={{
+                        padding: '48px 0',
+                        textAlign: 'center',
+                        color: 'var(--mute-lt)',
+                        fontSize: 13,
+                      }}
+                    >
+                      {search || stockFilter !== 'all'
+                        ? 'No items match your filters'
+                        : 'No items in this category'}
+                    </td>
+                  </tr>
                 )}
               </tbody>
             </table>
@@ -484,10 +768,35 @@ export default function Inventory() {
         )}
       </div>
 
-      {showAdd && <AddItemModal activeType={activeType} onClose={() => setShowAdd(false)} onSuccess={() => { setShowAdd(false); qc.invalidateQueries({ queryKey: ['inventory', activeType] }) }} />}
-      {adjustItem && <AdjustModal item={adjustItem} onClose={() => setAdjustItem(null)} onSuccess={onAdjustSuccess} />}
-      {levelsItem && <UpdateLevelsModal item={levelsItem} onClose={() => setLevelsItem(null)} onSuccess={onLevelsSuccess} />}
-      {historyItem && <TransactionHistoryModal item={historyItem} onClose={() => setHistoryItem(null)} />}
+      {showAdd && (
+        <AddItemModal
+          activeType={activeType}
+          onClose={() => setShowAdd(false)}
+          onSuccess={() => {
+            setShowAdd(false)
+            qc.invalidateQueries({ queryKey: ['inventory', activeType] })
+          }}
+        />
+      )}
+      {editItem && (
+        <EditItemModal
+          item={editItem}
+          onClose={() => setEditItem(null)}
+          onSuccess={() => {
+            setEditItem(null)
+            qc.invalidateQueries({ queryKey: ['inventory', activeType] })
+          }}
+        />
+      )}
+      {adjustItem && (
+        <AdjustModal item={adjustItem} onClose={() => setAdjustItem(null)} onSuccess={onAdjustSuccess} />
+      )}
+      {levelsItem && (
+        <UpdateLevelsModal item={levelsItem} onClose={() => setLevelsItem(null)} onSuccess={onLevelsSuccess} />
+      )}
+      {historyItem && (
+        <TransactionHistoryModal item={historyItem} onClose={() => setHistoryItem(null)} />
+      )}
     </div>
   )
 }

@@ -1,9 +1,9 @@
 -- AMI ERP: Seed data — 4 companies, super_admin user, document sequences
 
 INSERT IGNORE INTO brands (name, code, address, city, state, phone, email, gstin, pan, bank_name, account_name, account_no, ifsc_code, swift_code, features) VALUES
-('Ami Enterprises Pvt. Ltd.', 'AEPL', 'Plot No: 64-71, Vill- Kamalpur Post- Kolabira, Seraikela - Kharsawan', 'Jamshedpur', 'Jharkhand', '94313-00011 / 94313 82886', 'info@amiglobal.in', '20AACCA1723B1ZS', 'AACCA1723B', 'HDFC Bank Ltd. Jamshedpur', 'AMI ENTERPRISES PRIVATE LIMITED', '50200104603835', 'HDFC0001066', NULL, '{"multiStockpoint": false}'),
-('Ami Pipes', 'AMIP', 'Plot No: 64-71, Vill- Kamalpur Post- Kolabira, Seraikela - Kharsawan', 'Jamshedpur', 'Jharkhand', '94313-00011', 'info@amiglobal.in', NULL, NULL, 'HDFC Bank Ltd. Jamshedpur', 'AMI PIPES', '50200104603835', 'HDFC0001066', NULL, '{}'),
-('Ami Cylinders', 'AMIC', 'Plot No: 64-71, Vill- Kamalpur Post- Kolabira, Seraikela - Kharsawan', 'Jamshedpur', 'Jharkhand', '94313-00011', 'info@amiglobal.in', NULL, NULL, 'HDFC Bank Ltd. Jamshedpur', 'AMI CYLINDERS', '50200104603835', 'HDFC0001066', NULL, '{}'),
+('Ami Enterprises Pvt. Ltd.', 'AEPL', 'Plot No: 64-71, Vill- Kamalpur Post- Kolabira, Seraikela - Kharsawan 833220', 'Jamshedpur', 'Jharkhand', '94313-00011 / 94313 82886', 'info@amiglobal.in', '20AACCA1723B1ZS', 'AACCA1723B', 'HDFC Bank Ltd. Jamshedpur', 'AMI ENTERPRISES PRIVATE LIMITED', '50200104603835', 'HDFC0001066', NULL, '{"multiStockpoint": false}'),
+('Ami Pipes', 'AMIP', 'Plot No: 64-71, Vill- Kamalpur Post- Kolabira, Seraikela - Kharsawan 833220', 'Jamshedpur', 'Jharkhand', '94313-00011', 'info@amiglobal.in', NULL, NULL, 'HDFC Bank Ltd. Jamshedpur', 'AMI PIPES', '50200104603835', 'HDFC0001066', NULL, '{}'),
+('Ami Cylinders', 'AMIC', 'Plot No: 64-71, Vill- Kamalpur Post- Kolabira, Seraikela - Kharsawan 833220', 'Jamshedpur', 'Jharkhand', '94313-00011', 'info@amiglobal.in', NULL, NULL, 'HDFC Bank Ltd. Jamshedpur', 'AMI CYLINDERS', '50200104603835', 'HDFC0001066', NULL, '{}'),
 ('Zatakia Commercials', 'ZATC', 'Jamshedpur', 'Jamshedpur', 'Jharkhand', NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, '{}');
 
 -- super_admin password: Admin@123

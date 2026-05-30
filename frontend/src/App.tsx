@@ -60,7 +60,7 @@ function AppRoutes() {
       <Route path="/proforma-invoices" element={<PrivateRoute roles={['super_admin','admin','accounts']}><ProformaInvoices /></PrivateRoute>} />
       <Route path="/reports" element={<PrivateRoute roles={['super_admin','admin','accounts']}><Reports /></PrivateRoute>} />
       <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
-      <Route path="/admin" element={<PrivateRoute roles={['super_admin']}><Admin /></PrivateRoute>} />
+      <Route path="/admin" element={<PrivateRoute roles={['super_admin','admin']}><Admin /></PrivateRoute>} />
       <Route path="/" element={<Navigate to="/dashboard" replace />} />
       <Route path="*" element={<Navigate to="/dashboard" replace />} />
     </Routes>

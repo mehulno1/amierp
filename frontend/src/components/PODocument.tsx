@@ -1,10 +1,12 @@
 import { useQuery } from '@tanstack/react-query'
 import { purchaseOrdersApi } from '../services/api'
 import { X, Download } from 'lucide-react'
-import jsPDF from 'jspdf'
-import html2canvas from 'html2canvas'
 import { useRef } from 'react'
+import toast from 'react-hot-toast'
 import LoadingSpinner from './LoadingSpinner'
+import DocumentHeader from './DocumentHeader'
+import { fmtDate } from '../utils/formatDate'
+import { downloadDocumentPdf } from '../utils/renderDocumentPdf'
 
 export default function PODocument({ poId, onClose }: { poId: number; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -16,22 +18,12 @@ export default function PODocument({ poId, onClose }: { poId: number; onClose: (
 
   const downloadPDF = async () => {
     if (!ref.current) return
-    const canvas = await html2canvas(ref.current, { scale: 2, useCORS: true, allowTaint: true, logging: false })
-    const imgData = canvas.toDataURL('image/jpeg', 0.98)
-    const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' })
-    const pageW = pdf.internal.pageSize.getWidth()
-    const pageH = pdf.internal.pageSize.getHeight()
-    const imgW = pageW
-    const imgH = (canvas.height * imgW) / canvas.width
-    let remaining = imgH
-    let offset = 0
-    while (remaining > 0) {
-      pdf.addImage(imgData, 'JPEG', 0, -offset, imgW, imgH)
-      remaining -= pageH
-      offset += pageH
-      if (remaining > 0) pdf.addPage()
+    try {
+      await downloadDocumentPdf(ref.current, `${po?.po_no?.replace(/\//g, '-') || 'purchase-order'}.pdf`)
+    } catch (err) {
+      toast.error('PDF download failed')
+      console.error(err)
     }
-    pdf.save(`${po?.po_no?.replace(/\//g, '-')}.pdf`)
   }
 
   if (isLoading) return (
@@ -61,12 +53,13 @@ export default function PODocument({ poId, onClose }: { poId: number; onClose: (
 
         <div className="overflow-y-auto flex-1 p-4 bg-gray-100">
           <div ref={ref} className="bg-white mx-auto p-8 shadow-sm" style={{ width: '794px', minHeight: '1123px', fontFamily: 'Arial, sans-serif', fontSize: '11px' }}>
-            {/* Header */}
-            <div className="text-center border-b-2 border-gray-800 pb-4 mb-4">
-              <div className="text-2xl font-bold text-blue-800 tracking-wide">{po.brand_name || 'AMI ENTERPRISES PVT. LTD.'}</div>
-              <div className="text-xs text-gray-600 mt-1">{po.brand_address || 'Manufacturer of Lancing Pipes & Allied Products'}</div>
-              {po.brand_gstin && <div className="text-xs text-gray-600">GSTIN: {po.brand_gstin}</div>}
-            </div>
+            <DocumentHeader
+              brandName={po.brand_name}
+              brandAddress={po.brand_address}
+              brandPhone={po.brand_phone}
+              brandEmail={po.brand_email}
+              brandGstin={po.brand_gstin}
+            />
 
             <div className="text-center text-base font-bold mb-4 border border-gray-400 py-1">PURCHASE ORDER</div>
 
@@ -78,12 +71,13 @@ export default function PODocument({ poId, onClose }: { poId: number; onClose: (
                 {po.vendor_address && <div className="text-gray-600 whitespace-pre-line">{po.vendor_address}</div>}
                 {po.vendor_gstin && <div className="mt-1">GSTIN: <span className="font-mono">{po.vendor_gstin}</span></div>}
                 {po.vendor_mobile && <div>Mobile: {po.vendor_mobile}</div>}
+                <div className="mt-1 font-semibold">Kind Attn: {po.vendor_contact || ''}</div>
               </div>
               <div className="border border-gray-300 p-3 space-y-1">
                 <div className="flex justify-between"><span className="text-gray-600">PO No.:</span><span className="font-semibold">{po.po_no}</span></div>
-                <div className="flex justify-between"><span className="text-gray-600">PO Date:</span><span>{po.po_date}</span></div>
-                {po.quotation_no && <div className="flex justify-between"><span className="text-gray-600">Quotation No.:</span><span>{po.quotation_no}</span></div>}
-                {po.quotation_date && <div className="flex justify-between"><span className="text-gray-600">Quotation Date:</span><span>{po.quotation_date}</span></div>}
+                <div className="flex justify-between"><span className="text-gray-600">PO Date:</span><span>{fmtDate(po.po_date)}</span></div>
+                <div className="flex justify-between"><span className="text-gray-600">Quotation No.:</span><span>{po.quotation_no || ''}</span></div>
+                {po.quotation_date && <div className="flex justify-between"><span className="text-gray-600">Quotation Date:</span><span>{fmtDate(po.quotation_date)}</span></div>}
               </div>
             </div>
 

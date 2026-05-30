@@ -22,4 +22,21 @@ router.get('/', async (req: AuthRequest, res: Response) => {
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
 })
 
+// Bank accounts for a brand — needed at order entry time so the user can pick the
+// bank that will be stamped onto the PI. Scoped to brands the user can access.
+router.get('/:id/banks', async (req: AuthRequest, res: Response) => {
+  try {
+    const brandId = parseInt(req.params.id)
+    if (req.user!.role !== 'super_admin') {
+      const allowed = await executeQuery<any>('SELECT 1 FROM user_brands WHERE user_id = ? AND brand_id = ?', [req.user!.id, brandId])
+      if (!allowed.length) return res.status(403).json({ success: false, error: 'No access to this brand' })
+    }
+    const banks = await executeQuery(
+      'SELECT id, brand_id, account_name, bank_name, account_no, ifsc_code, swift_code, branch, is_default FROM brand_banks WHERE brand_id = ? AND is_active = 1 ORDER BY is_default DESC, bank_name',
+      [brandId]
+    )
+    res.json({ success: true, data: banks })
+  } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
+})
+
 export default router

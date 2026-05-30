@@ -21,7 +21,8 @@ export async function getPurchaseOrder(req: AuthRequest, res: Response) {
     const { id } = req.params
     const ids = req.brandId ? [req.brandId] : req.userBrandIds!
     const pos = await executeQuery<any>(
-      `SELECT po.*, v.name as vendor_name, v.address as vendor_address, v.city as vendor_city, v.mobile as vendor_mobile, v.gstin as vendor_gstin, b.name as brand_name
+      `SELECT po.*, v.name as vendor_name, v.contact_person as vendor_contact, v.address as vendor_address, v.city as vendor_city, v.mobile as vendor_mobile, v.gstin as vendor_gstin,
+              b.name as brand_name, b.address as brand_address, b.phone as brand_phone, b.email as brand_email, b.gstin as brand_gstin, b.pan as brand_pan
        FROM purchase_orders po JOIN vendors v ON po.vendor_id = v.id JOIN brands b ON po.brand_id = b.id WHERE po.id = ? AND po.brand_id IN (${ids.map(() => '?').join(',')})`,
       [id, ...ids]
     )
@@ -55,13 +56,77 @@ export async function createPurchaseOrder(req: AuthRequest, res: Response) {
     const poId = result.insertId
 
     for (const item of (items || [])) {
+      const qty = parseFloat(item.qty) || 0
+      const rate = parseFloat(item.rate) || 0
+      const total = parseFloat((qty * rate).toFixed(2))
       await conn.execute(
         'INSERT INTO purchase_order_items (po_id, material_no, description, qty, uom, rate, total) VALUES (?,?,?,?,?,?,?)',
-        [poId, item.material_no ?? null, item.description, item.qty, item.uom, item.rate ?? 0, item.total ?? 0]
+        [poId, item.material_no ?? null, item.description, qty, item.uom || 'nos', rate, total]
       )
     }
     await conn.commit(); conn.release()
     res.status(201).json({ success: true, data: { id: poId, po_no } })
+  } catch (err: any) {
+    await conn.rollback(); conn.release()
+    res.status(500).json({ success: false, error: err.message })
+  }
+}
+
+export async function updatePurchaseOrder(req: AuthRequest, res: Response) {
+  const conn = await pool.getConnection()
+  try {
+    const { id } = req.params
+    const ids = req.userBrandIds!
+    const rows = await executeQuery<any>(
+      `SELECT id, brand_id FROM purchase_orders WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`,
+      [id, ...ids]
+    )
+    if (!rows.length) { conn.release(); return res.status(404).json({ success: false, error: 'PO not found' }) }
+
+    const { vendor_id, po_date, quotation_no, quotation_date, gst_percent,
+      terms_gst, terms_delivery, terms_delivery_instructions, terms_supply_basis, terms_payment, notes, items } = req.body
+
+    await conn.beginTransaction()
+    await conn.execute(
+      `UPDATE purchase_orders SET vendor_id=?, po_date=?, quotation_no=?, quotation_date=?, gst_percent=?,
+       terms_gst=?, terms_delivery=?, terms_delivery_instructions=?, terms_supply_basis=?, terms_payment=?, notes=? WHERE id=?`,
+      [vendor_id, po_date, quotation_no ?? null, quotation_date || null, gst_percent ?? 18,
+       terms_gst ?? null, terms_delivery ?? null, terms_delivery_instructions ?? null, terms_supply_basis ?? null, terms_payment ?? null, notes ?? null, id]
+    )
+    if (Array.isArray(items)) {
+      // Replace the line items wholesale — easier than reconciling row IDs and the PO is
+      // not delivery-tracked yet at this stage in the flow.
+      await conn.execute('DELETE FROM purchase_order_items WHERE po_id = ?', [id])
+      for (const item of items) {
+        const qty = parseFloat(item.qty) || 0
+        const rate = parseFloat(item.rate) || 0
+        const total = parseFloat((qty * rate).toFixed(2))
+        await conn.execute(
+          'INSERT INTO purchase_order_items (po_id, material_no, description, qty, uom, rate, total) VALUES (?,?,?,?,?,?,?)',
+          [id, item.material_no ?? null, item.description, qty, item.uom || 'nos', rate, total]
+        )
+      }
+    }
+    await conn.commit(); conn.release()
+    res.json({ success: true, message: 'PO updated' })
+  } catch (err: any) {
+    await conn.rollback(); conn.release()
+    res.status(500).json({ success: false, error: err.message })
+  }
+}
+
+export async function deletePurchaseOrder(req: AuthRequest, res: Response) {
+  const conn = await pool.getConnection()
+  try {
+    const { id } = req.params
+    const ids = req.userBrandIds!
+    const rows = await executeQuery<any>(`SELECT id FROM purchase_orders WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`, [id, ...ids])
+    if (!rows.length) { conn.release(); return res.status(404).json({ success: false, error: 'PO not found' }) }
+    await conn.beginTransaction()
+    await conn.execute('DELETE FROM purchase_order_items WHERE po_id = ?', [id])
+    await conn.execute('DELETE FROM purchase_orders WHERE id = ?', [id])
+    await conn.commit(); conn.release()
+    res.json({ success: true, message: 'PO deleted' })
   } catch (err: any) {
     await conn.rollback(); conn.release()
     res.status(500).json({ success: false, error: err.message })

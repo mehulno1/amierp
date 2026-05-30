@@ -10,13 +10,7 @@ import PIDocument from '../components/PIDocument'
 import toast from 'react-hot-toast'
 import * as XLSX from 'xlsx'
 import type { ProformaInvoice } from '../types'
-
-function fmtDate(d: string | null | undefined) {
-  if (!d) return '—'
-  const part = d.split('T')[0]
-  const [y, m, day] = part.split('-')
-  return `${day}/${m}/${y}`
-}
+import { fmtDate } from '../utils/formatDate'
 
 const statusColors: Record<string, string> = {
   generated: 'bg-blue-100 text-blue-700',
@@ -112,8 +106,8 @@ export default function ProformaInvoices() {
                     <td className="py-3 text-gray-900">{p.client_name}</td>
                     <td className="py-3 text-gray-500 text-xs font-mono">{p.order_id}</td>
                     <td className="py-3 text-gray-500">{p.po_no || '—'}</td>
-                    <td className="py-3 text-gray-700">₹ {parseFloat(String(p.basic_total || 0)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
-                    <td className="py-3 font-medium text-gray-900">₹ {parseFloat(String(p.total_amount || 0)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                    <td className="py-3 text-gray-700">{p.order_type === 'export' ? '$' : '₹'} {parseFloat(String(p.basic_total || 0)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
+                    <td className="py-3 font-medium text-gray-900">{p.order_type === 'export' ? '$' : '₹'} {parseFloat(String(p.total_amount || 0)).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
                     <td className="py-3"><span className={`badge-status ${statusColors[p.status] || 'bg-gray-100 text-gray-600'}`}>{p.status}</span></td>
                     <td className="py-3">
                       <div className="flex items-center gap-2">
