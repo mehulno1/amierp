@@ -9,6 +9,7 @@ export interface Brand {
   email?: string
   gstin?: string
   pan?: string
+  iec?: string
   bank_name?: string
   account_name?: string
   account_no?: string
@@ -24,6 +25,7 @@ export interface User {
   email: string
   name: string
   role: 'super_admin' | 'admin' | 'requisition_admin' | 'quotation_admin' | 'user' | 'accounts'
+  can_approve_requisitions?: boolean
   is_active: boolean
 }
 
@@ -155,7 +157,7 @@ export interface Vendor {
 }
 
 // Requisition types
-export type RequisitionStatus = 'pending' | 'quotation_pending' | 'quotation_received' | 'po_raised' | 'partially_delivered' | 'delivered' | 'cancelled'
+export type RequisitionStatus = 'pending_approval' | 'pending' | 'quotation_pending' | 'quotation_received' | 'po_raised' | 'partially_delivered' | 'delivered' | 'cancelled' | 'rejected'
 export type RequisitionPriority = 'normal' | 'urgent' | 'critical'
 
 export interface Requisition {
@@ -168,6 +170,10 @@ export interface Requisition {
   priority: RequisitionPriority
   reminder_date?: string
   notes?: string
+  approved_by?: number
+  approved_by_name?: string
+  approved_at?: string
+  rejection_reason?: string
   created_at: string
   items?: RequisitionItem[]
   quotations?: VendorQuotation[]
@@ -251,6 +257,7 @@ export interface Enquiry {
   assigned_to_name?: string
   customer_name: string
   contact_person?: string
+  customer_address?: string
   mobile?: string
   email?: string
   customer_city?: string
@@ -312,6 +319,8 @@ export interface ProformaInvoice {
   po_no?: string
   po_date?: string
   status: 'generated' | 'sent' | 'revised'
+  order_type?: 'domestic' | 'export'
+  gst_type?: 'cgst_sgst' | 'igst' | 'none'
   gst_percent: number
   basic_total: number
   gst_amount: number
@@ -330,6 +339,7 @@ export interface ProformaInvoice {
   brand_email?: string
   brand_gstin?: string
   brand_pan?: string
+  brand_iec?: string
   bank_name?: string
   account_name?: string
   account_no?: string

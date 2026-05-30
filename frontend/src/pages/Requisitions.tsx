@@ -1,16 +1,24 @@
 import { useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useSearchParams } from 'react-router-dom'
-import { requisitionsApi, vendorsApi } from '../services/api'
-import { Plus, Eye, Download, Trash2, Pencil, Check } from 'lucide-react'
+import { useSearchParams, useNavigate } from 'react-router-dom'
+import { requisitionsApi, vendorsApi, inventoryApi } from '../services/api'
+import { Plus, Eye, Download, Trash2, Pencil, Check, ShoppingCart } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
-import { useForm, useFieldArray } from 'react-hook-form'
+import { useForm, useFieldArray, useWatch } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import LoadingSpinner from '../components/LoadingSpinner'
 import type { RequisitionStatus, RequisitionPriority } from '../types'
 import * as XLSX from 'xlsx'
+import PageHeader from '../components/ui/PageHeader'
+import Button from '../components/ui/Button'
+import StatusPill from '../components/ui/StatusPill'
+import { statusMap, humanize } from '../components/ui/statusMap'
+import { fmtDate } from '../utils/formatDate'
 
+// Used inside the (still legacy-styled) modal — kept to avoid restyling the heavy detail form here.
 const statusColors: Record<RequisitionStatus, string> = {
+  pending_approval: 'bg-amber-100 text-amber-700',
+  rejected: 'bg-red-100 text-red-700',
   pending: 'bg-gray-100 text-gray-700',
   quotation_pending: 'bg-yellow-100 text-yellow-700',
   quotation_received: 'bg-blue-100 text-blue-700',
@@ -26,21 +34,160 @@ const priorityColors: Record<RequisitionPriority, string> = {
   normal: 'bg-gray-100 text-gray-700',
 }
 
+const TABS: { value: string; label: string }[] = [
+  { value: '', label: 'All' },
+  { value: 'pending_approval', label: 'Awaiting approval' },
+  { value: 'pending', label: 'Pending' },
+  { value: 'quotation_received', label: 'Quoted' },
+  { value: 'po_raised', label: 'PO raised' },
+  { value: 'delivered', label: 'Delivered' },
+  { value: 'rejected', label: 'Rejected' },
+]
+
+// Requisition item row — picks from the spare-parts inventory rather than free text.
+// On selection we mirror the spare part's name into `description` and its UOM into the
+// UOM field so the backend never receives a row without enough info to display.
+// Live stock from inventory is shown beside the picker as a hint for the requester.
+function RequisitionItemRow({ index, control, register, setValue, spareParts, fmtAvail, onRemove, canRemove }: {
+  index: number
+  control: any
+  register: any
+  setValue: any
+  spareParts: any[]
+  fmtAvail: (sp: any) => string
+  onRemove: () => void
+  canRemove: boolean
+}) {
+  const sparePartId = useWatch({ control, name: `items.${index}.spare_part_id` })
+  const selected = spareParts.find(sp => String(sp.id) === String(sparePartId))
+
+  return (
+    <div className="border border-gray-200 rounded-lg p-4 space-y-3">
+      <div className="grid grid-cols-3 gap-3">
+        <div className="col-span-2">
+          <label className="block text-xs font-medium text-gray-600 mb-1">Spare Part *</label>
+          <select
+            className="input-field"
+            {...register(`items.${index}.spare_part_id`, { required: true })}
+            onChange={(e) => {
+              const id = e.target.value
+              setValue(`items.${index}.spare_part_id`, id)
+              const sp = spareParts.find(p => String(p.id) === String(id))
+              if (sp) {
+                setValue(`items.${index}.description`, sp.item_name)
+                setValue(`items.${index}.uom`, sp.uom || 'nos')
+              }
+            }}
+          >
+            <option value="">— select from spare parts inventory —</option>
+            {spareParts.map(sp => (
+              <option key={sp.id} value={sp.id}>
+                {sp.item_name}{sp.item_code ? ` (${sp.item_code})` : ''} — {fmtAvail(sp)}
+              </option>
+            ))}
+          </select>
+          {/* Mirror description into a hidden field — the backend still relies on it for legacy
+              reads (PI/PO line text, exports). Kept hidden so the requester doesn't see two
+              "what" fields and re-type the part name. */}
+          <input type="hidden" {...register(`items.${index}.description`)} />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Available</label>
+          <div className="input-field bg-gray-50 text-gray-600 text-xs" style={{ lineHeight: '1.65' }}>
+            {selected ? fmtAvail(selected) : '—'}
+          </div>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-4 gap-3">
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Qty *</label>
+          <input type="number" step="0.001" min="0" className="input-field" {...register(`items.${index}.qty`, { required: true })} />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">UOM</label>
+          <select className="input-field" {...register(`items.${index}.uom`)}>
+            <option value="nos">Nos</option><option value="pcs">Pcs</option><option value="kgs">Kgs</option><option value="mtr">Mtr</option><option value="set">Set</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Urgency (days)</label>
+          <input type="number" min="1" className="input-field" {...register(`items.${index}.no_of_days`)} />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Machine / Area</label>
+          <input className="input-field" placeholder="e.g. Heat exchanger" {...register(`items.${index}.area`)} />
+        </div>
+      </div>
+
+      <div>
+        <label className="block text-xs font-medium text-gray-600 mb-1">Comments (make, model, vendor preference, other details)</label>
+        <input className="input-field" placeholder="e.g. ABB make, model XYZ-12, prefer Singh & Co" {...register(`items.${index}.notes`)} />
+      </div>
+
+      {canRemove && (
+        <div className="flex justify-end">
+          <button type="button" onClick={onRemove} className="text-red-500 text-xs hover:text-red-700 flex items-center gap-1">
+            <Trash2 size={11} /> Remove
+          </button>
+        </div>
+      )}
+    </div>
+  )
+}
+
 function CreateRequisitionModal({ onClose, onSuccess }: { onClose: () => void; onSuccess: () => void }) {
   const [loading, setLoading] = useState(false)
   const { brands } = useAuth()
   const defaultBrandId = String(
     (brands.find((b: any) => b.name.toLowerCase().includes('ami enterprise')) || brands[0])?.id || ''
   )
-  const { register, control, handleSubmit } = useForm({
-    defaultValues: { brand_id: defaultBrandId, machine_area: '', priority: 'normal', reminder_date: '', notes: '', items: [{ description: '', area: '', qty: 1, uom: 'nos', no_of_days: 7 }] }
+  const { register, control, handleSubmit, watch, setValue } = useForm({
+    defaultValues: {
+      brand_id: defaultBrandId,
+      machine_area: '', priority: 'normal', reminder_date: '', notes: '',
+      items: [{ spare_part_id: '', description: '', area: '', qty: 1, uom: 'nos', no_of_days: 7, notes: '' }]
+    }
   })
   const { fields, append, remove } = useFieldArray({ control, name: 'items' })
+  const selectedBrandId = parseInt(watch('brand_id') || '0')
+
+  // Spare parts for the selected company. The picker hard-fails (required) if there are
+  // none — the user wanted to retire free-form descriptions specifically because they
+  // couldn't track stock against them.
+  const { data: spareParts = [] } = useQuery({
+    queryKey: ['inventory', 'spare_parts', selectedBrandId],
+    queryFn: () => inventoryApi.getByType('spare_parts').then(r =>
+      (r.data.data as any[]).filter(it => !selectedBrandId || it.brand_id === selectedBrandId)
+    ),
+    enabled: !!selectedBrandId,
+  })
+
+  const fmtAvail = (sp: any) => {
+    const avail = Number(sp.current_stock || 0) - Number(sp.reserved_stock || 0)
+    return `${avail} ${sp.uom || ''} in stock`
+  }
 
   const onSubmit = async (data: any) => {
     setLoading(true)
     try {
-      await requisitionsApi.create({ ...data, brand_id: parseInt(data.brand_id) })
+      // Bundle the per-item comments into description so existing list views and PDFs
+      // (which read description) still surface them. Backend keeps spare_part_id as the
+      // structured link used for inventory crediting on receipt.
+      const items = data.items.map((it: any) => {
+        const sp = spareParts.find(p => String(p.id) === String(it.spare_part_id))
+        const baseName = sp?.item_name || it.description || ''
+        const description = it.notes ? `${baseName} — ${it.notes}` : baseName
+        return {
+          spare_part_id: it.spare_part_id ? parseInt(it.spare_part_id) : null,
+          description,
+          area: it.area || null,
+          qty: parseFloat(it.qty) || 0,
+          uom: it.uom || sp?.uom || 'nos',
+          no_of_days: it.no_of_days ? parseInt(it.no_of_days) : null,
+        }
+      })
+      await requisitionsApi.create({ ...data, brand_id: parseInt(data.brand_id), items })
       onSuccess()
     } catch (err: any) { toast.error(err.response?.data?.error || 'Failed') }
     finally { setLoading(false) }
@@ -64,44 +211,46 @@ function CreateRequisitionModal({ onClose, onSuccess }: { onClose: () => void; o
                 </select>
               </div>
             )}
-            <div><label className="block text-sm font-medium text-gray-700 mb-1">Machine / Area</label><input className="input-field" placeholder="e.g. 250 KW Heat Exchanger" {...register('machine_area')} /></div>
+            <div><label className="block text-sm font-medium text-gray-700 mb-1">Machine / Area (overall)</label><input className="input-field" placeholder="e.g. 250 KW Heat Exchanger" {...register('machine_area')} /></div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1">Priority</label>
               <select className="input-field" {...register('priority')}>
                 <option value="normal">Normal</option><option value="urgent">Urgent</option><option value="critical">Critical</option>
               </select>
             </div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1">Reminder Date</label><input type="date" className="input-field" {...register('reminder_date')} /></div>
-            <div><label className="block text-sm font-medium text-gray-700 mb-1">Notes</label><input className="input-field" {...register('notes')} /></div>
+            <div><label className="block text-sm font-medium text-gray-700 mb-1">Notes (whole requisition)</label><input className="input-field" {...register('notes')} /></div>
           </div>
 
           <div>
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-medium text-gray-900">Items Required</h3>
-              <button type="button" onClick={() => append({ description: '', area: '', qty: 1, uom: 'nos', no_of_days: 7 })} className="btn-secondary py-1 text-xs flex items-center gap-1"><Plus size={12} />Add Item</button>
+              <button type="button" onClick={() => append({ spare_part_id: '', description: '', area: '', qty: 1, uom: 'nos', no_of_days: 7, notes: '' })} className="btn-secondary py-1 text-xs flex items-center gap-1"><Plus size={12} />Add Item</button>
             </div>
+            {spareParts.length === 0 && selectedBrandId ? (
+              <div className="border border-amber-200 bg-amber-50 text-amber-800 text-sm rounded-lg p-3 mb-3">
+                No spare parts are recorded in inventory for this company yet. Add them under <strong>Inventory → Spare parts</strong> before raising an indent.
+              </div>
+            ) : null}
             <div className="space-y-3">
               {fields.map((field, idx) => (
-                <div key={field.id} className="border border-gray-200 rounded-lg p-4">
-                  <div className="grid grid-cols-4 gap-3">
-                    <div className="col-span-2"><label className="block text-xs font-medium text-gray-600 mb-1">Description (make, model, size) *</label><input className="input-field" {...register(`items.${idx}.description`, { required: true })} /></div>
-                    <div><label className="block text-xs font-medium text-gray-600 mb-1">Area / Machine</label><input className="input-field" {...register(`items.${idx}.area`)} /></div>
-                    <div><label className="block text-xs font-medium text-gray-600 mb-1">Urgency (days)</label><input type="number" min="1" className="input-field" {...register(`items.${idx}.no_of_days`)} /></div>
-                    <div><label className="block text-xs font-medium text-gray-600 mb-1">Qty *</label><input type="number" step="0.001" min="0" className="input-field" {...register(`items.${idx}.qty`, { required: true })} /></div>
-                    <div><label className="block text-xs font-medium text-gray-600 mb-1">UOM</label>
-                      <select className="input-field" {...register(`items.${idx}.uom`)}>
-                        <option value="nos">Nos</option><option value="pcs">Pcs</option><option value="kgs">Kgs</option><option value="mtr">Mtr</option><option value="set">Set</option>
-                      </select>
-                    </div>
-                    {fields.length > 1 && <div className="flex items-end"><button type="button" onClick={() => remove(idx)} className="text-red-500 text-xs hover:text-red-700 mb-1">Remove</button></div>}
-                  </div>
-                </div>
+                <RequisitionItemRow
+                  key={field.id}
+                  index={idx}
+                  control={control}
+                  register={register}
+                  setValue={setValue}
+                  spareParts={spareParts}
+                  fmtAvail={fmtAvail}
+                  onRemove={() => remove(idx)}
+                  canRemove={fields.length > 1}
+                />
               ))}
             </div>
           </div>
 
           <div className="flex justify-end gap-3">
             <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
-            <button type="submit" disabled={loading} className="btn-primary">{loading ? 'Submitting...' : 'Submit Requisition'}</button>
+            <button type="submit" disabled={loading || (!!selectedBrandId && spareParts.length === 0)} className="btn-primary">{loading ? 'Submitting...' : 'Submit Requisition'}</button>
           </div>
         </form>
       </div>
@@ -111,7 +260,8 @@ function CreateRequisitionModal({ onClose, onSuccess }: { onClose: () => void; o
 
 function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: number; onClose: () => void }) {
   const qc = useQueryClient()
-  const { isRequisitionAdmin, isSuperAdmin } = useAuth()
+  const navigate = useNavigate()
+  const { isRequisitionAdmin, isSuperAdmin, canApproveRequisitions, user } = useAuth()
   const [showAddQuote, setShowAddQuote] = useState(false)
   const [editingItems, setEditingItems] = useState(false)
   const [editRows, setEditRows] = useState<any[]>([])
@@ -143,6 +293,7 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
 
   const startEditItems = () => {
     setEditRows((req?.items || []).map((item: any) => ({
+      spare_part_id: item.spare_part_id ?? null,
       description: item.description || '',
       area: item.area || '',
       qty: item.qty ?? 1,
@@ -184,7 +335,68 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
     }
   }
 
+  const refresh = () => {
+    qc.invalidateQueries({ queryKey: ['requisition', requisitionId] })
+    qc.invalidateQueries({ queryKey: ['requisitions'] })
+  }
+
+  const approve = async () => {
+    try {
+      await requisitionsApi.approve(requisitionId)
+      refresh()
+      toast.success('Requisition approved')
+    } catch (err: any) { toast.error(err.response?.data?.error || 'Failed') }
+  }
+
+  const reject = async () => {
+    const reason = window.prompt('Reason for rejection (the creator will see this):')
+    if (reason === null) return
+    if (!reason.trim()) { toast.error('A reason is required'); return }
+    try {
+      await requisitionsApi.reject(requisitionId, reason.trim())
+      refresh()
+      toast.success('Requisition rejected')
+    } catch (err: any) { toast.error(err.response?.data?.error || 'Failed') }
+  }
+
+  const resubmit = async () => {
+    try {
+      await requisitionsApi.resubmit(requisitionId)
+      refresh()
+      toast.success('Resubmitted for approval')
+    } catch (err: any) { toast.error(err.response?.data?.error || 'Failed') }
+  }
+
+  const generatePO = (quotation: any) => {
+    const items = (req?.items || []).map((ri: any) => {
+      const qi = (quotation.items || []).find((q: any) => q.requisition_item_id === ri.id)
+      return {
+        material_no: '',
+        description: ri.description || '',
+        qty: ri.qty || 0,
+        uom: qi?.uom || ri.uom || 'nos',
+        rate: qi?.rate || 0,
+        total: parseFloat(((ri.qty || 0) * (qi?.rate || 0)).toFixed(2)),
+      }
+    })
+    onClose()
+    navigate('/purchase-orders', {
+      state: {
+        fromRequisition: true,
+        vendor_id: quotation.vendor_id,
+        requisition_id: requisitionId,
+        items,
+      },
+    })
+  }
+
   if (isLoading) return null
+
+  const isPendingApproval = req?.status === 'pending_approval'
+  const isRejected = req?.status === 'rejected'
+  const preApproval = isPendingApproval || isRejected      // gates all downstream procurement UI
+  const isCreator = req?.created_by === user?.id
+  const canEditItems = isSuperAdmin() || (preApproval && isCreator)
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -200,14 +412,37 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
           <div className="flex gap-3 flex-wrap">
             <span className={`badge-status ${statusColors[req?.status as RequisitionStatus]}`}>{req?.status?.replace(/_/g, ' ')}</span>
             <span className={`badge-status ${priorityColors[req?.priority as RequisitionPriority]}`}>{req?.priority}</span>
-            {req?.reminder_date && <span className="badge-status bg-blue-100 text-blue-700">Reminder: {new Date(req.reminder_date).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' })}</span>}
+            {req?.reminder_date && <span className="badge-status bg-blue-100 text-blue-700">Reminder: {fmtDate(req.reminder_date)}</span>}
           </div>
+
+          {/* Approval gate — banner + actions */}
+          {isPendingApproval && (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 flex items-center justify-between gap-3">
+              <p className="text-sm text-amber-800">This requisition is awaiting approval before procurement can begin.</p>
+              {canApproveRequisitions() && (
+                <div className="flex gap-2 shrink-0">
+                  <button onClick={approve} className="btn-primary text-sm py-1.5">Approve</button>
+                  <button onClick={reject} className="btn-secondary text-sm py-1.5 text-red-600">Reject</button>
+                </div>
+              )}
+            </div>
+          )}
+          {isRejected && (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-4 flex items-center justify-between gap-3">
+              <div className="text-sm text-red-800">
+                <span className="font-medium">Rejected.</span> {req?.rejection_reason || 'No reason provided.'}
+              </div>
+              {(isCreator || isSuperAdmin()) && (
+                <button onClick={resubmit} className="btn-primary text-sm py-1.5 shrink-0">Resubmit for approval</button>
+              )}
+            </div>
+          )}
 
           {/* Items */}
           <div>
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-medium text-gray-900">Items Required</h3>
-              {isSuperAdmin() && !editingItems && <button onClick={startEditItems} className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"><Pencil size={14} /></button>}
+              {canEditItems && !editingItems && <button onClick={startEditItems} className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"><Pencil size={14} /></button>}
             </div>
             {editingItems ? (
               <div className="space-y-2">
@@ -268,12 +503,29 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
                         {isRequisitionAdmin() && q.status === 'pending' && (
                           <button onClick={() => selectQuotation(q.id)} className="btn-primary text-xs py-1">Select</button>
                         )}
+                        {q.status === 'selected' && (
+                          <button
+                            onClick={() => generatePO(q)}
+                            className="inline-flex items-center gap-1 text-xs py-1 px-2"
+                            style={{
+                              background: 'rgba(34,139,34,.08)',
+                              color: '#228b22',
+                              fontFamily: 'var(--font-mono)',
+                              fontSize: 11,
+                              fontWeight: 600,
+                              border: '1px solid rgba(34,139,34,.2)',
+                            }}
+                            title="Generate Purchase Order for this vendor"
+                          >
+                            <ShoppingCart size={12} /> Generate PO
+                          </button>
+                        )}
                         {isSuperAdmin() && (
                           <button onClick={() => deleteQuotation(q.id)} className="text-red-400 hover:text-red-600" title="Delete quotation"><Trash2 size={14} /></button>
                         )}
                       </div>
                     </div>
-                    <div className="text-xs text-gray-500">{q.quotation_date}{q.validity_date && ` · valid till ${q.validity_date}`}</div>
+                    <div className="text-xs text-gray-500">{fmtDate(q.quotation_date)}{q.validity_date && ` · valid till ${fmtDate(q.validity_date)}`}</div>
                     {q.items?.length > 0 && (
                       <div className="mt-2 space-y-1">
                         {q.items.map((qi: any) => <div key={qi.id} className="text-sm">Rate: ₹{qi.rate} / {qi.uom} {qi.delivery_days && `· ${qi.delivery_days} days`} {qi.remarks && `· ${qi.remarks}`}</div>)}
@@ -286,7 +538,7 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
             </div>
           )}
 
-          {isRequisitionAdmin() && req?.status && (
+          {isRequisitionAdmin() && req?.status && !preApproval && (
             <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
               <span className="text-sm text-gray-500">Change status:</span>
               <select
@@ -305,7 +557,7 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
             </div>
           )}
 
-          {isRequisitionAdmin() && req?.status !== 'cancelled' && req?.status !== 'delivered' && (
+          {isRequisitionAdmin() && !preApproval && req?.status !== 'cancelled' && req?.status !== 'delivered' && (
             <div className="flex gap-3">
               {!showAddQuote ? (
                 <button onClick={() => setShowAddQuote(true)} className="btn-secondary text-sm">+ Add Vendor Quotation</button>
@@ -369,76 +621,193 @@ export default function Requisitions() {
     queryFn: () => requisitionsApi.list({ status }).then(r => r.data.data),
   })
 
-  const fmtDate = (d?: string | null) => d ? new Date(d).toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: 'numeric' }) : '—'
   const firstDesc = (r: any) => (r.items?.[0]?.description) || '—'
 
   const exportExcel = () => {
     const ws = XLSX.utils.json_to_sheet(requisitions.map((r: any) => ({
       'Indent No': r.indent_no, 'Description': firstDesc(r), 'Priority': r.priority,
       'Status': r.status, 'Due Date': fmtDate(r.reminder_date),
-      'Created By': r.created_by_name, 'Date': r.created_at?.split('T')[0],
+      'Created By': r.created_by_name, 'Date': fmtDate(r.created_at),
     })))
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Requisitions'); XLSX.writeFile(wb, 'requisitions.xlsx')
   }
 
   return (
-    <div className="space-y-4">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <h1 className="text-2xl font-bold text-gray-900">Requisitions</h1>
-        <div className="flex gap-2">
-          <button onClick={exportExcel} className="btn-secondary text-sm flex items-center justify-center gap-1 flex-1 sm:flex-initial"><Download size={14} />Export</button>
-          <button onClick={() => setShowCreate(true)} className="btn-primary flex items-center justify-center gap-2 flex-1 sm:flex-initial"><Plus size={16} />New Indent</button>
-        </div>
+    <div>
+      <PageHeader
+        breadcrumb={['Ami Enterprises', 'Requisitions']}
+        title="Purchase requisitions"
+        actions={
+          <>
+            <Button variant="secondary" leadingIcon={<Download size={14} />} onClick={exportExcel}>
+              Export
+            </Button>
+            <Button variant="primary" leadingIcon={<Plus size={14} />} onClick={() => setShowCreate(true)}>
+              New indent
+            </Button>
+          </>
+        }
+      />
+
+      {/* Tabs */}
+      <div className="flex gap-2 flex-wrap mb-4">
+        {TABS.map((t) => {
+          const active = status === t.value
+          return (
+            <button
+              key={t.value || 'all'}
+              onClick={() => setStatus(t.value)}
+              style={{
+                padding: '8px 14px',
+                fontFamily: 'var(--font-sans)',
+                fontSize: 12,
+                fontWeight: 500,
+                background: active ? 'var(--color-ink)' : '#fff',
+                color: active ? 'var(--color-paper)' : 'var(--mute-lt)',
+                border: `1px solid ${active ? 'var(--color-ink)' : 'var(--rule-lt-md)'}`,
+                cursor: 'pointer',
+              }}
+            >
+              {t.label}
+            </button>
+          )
+        })}
       </div>
 
-      <div className="flex gap-2 overflow-x-auto pb-1">
-        {['', 'pending', 'quotation_received', 'po_raised', 'delivered'].map(s => (
-          <button key={s} onClick={() => setStatus(s)} className={`px-3 py-1.5 rounded-lg text-sm border transition-colors whitespace-nowrap shrink-0 ${status === s ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}>
-            {s || 'All'}
-          </button>
-        ))}
-      </div>
+      {/* Table */}
+      <div style={{ background: '#fff', border: '1px solid var(--rule-lt)' }}>
+        {isLoading ? (
+          <LoadingSpinner />
+        ) : (
+          <>
+            <div
+              className="hidden md:grid"
+              style={{
+                gridTemplateColumns: '120px 1.6fr 90px 130px 110px 110px 110px 80px',
+                padding: '12px 20px',
+                gap: 14,
+                background: 'var(--color-paper-alt)',
+                fontFamily: 'var(--font-mono)',
+                fontSize: 10,
+                letterSpacing: '.18em',
+                textTransform: 'uppercase',
+                color: 'var(--mute-lt)',
+              }}
+            >
+              <span>Indent No.</span>
+              <span>Description</span>
+              <span>Priority</span>
+              <span>Status</span>
+              <span>Due date</span>
+              <span>Created by</span>
+              <span>Date</span>
+              <span></span>
+            </div>
 
-      <div className="card">
-        {isLoading ? <LoadingSpinner /> : (
-          <div className="overflow-x-auto">
-            <table className="w-full text-sm">
-              <thead><tr className="text-left border-b border-gray-100">
-                <th className="pb-3 text-gray-500 font-medium">Indent No</th>
-                <th className="pb-3 text-gray-500 font-medium">Description</th>
-                <th className="pb-3 text-gray-500 font-medium">Priority</th>
-                <th className="pb-3 text-gray-500 font-medium">Status</th>
-                <th className="pb-3 text-gray-500 font-medium">Due Date</th>
-                <th className="pb-3 text-gray-500 font-medium">Created By</th>
-                <th className="pb-3 text-gray-500 font-medium">Date</th>
-                <th className="pb-3 text-gray-500 font-medium">Actions</th>
-              </tr></thead>
-              <tbody className="divide-y divide-gray-50">
-                {requisitions.map((r: any) => (
-                  <tr key={r.id} className="hover:bg-gray-50">
-                    <td className="py-3 font-medium text-blue-600 cursor-pointer" onClick={() => setViewId(r.id)}>{r.indent_no}</td>
-                    <td className="py-3 text-gray-700">{firstDesc(r)}{r.items?.length > 1 && <span className="text-gray-400 text-xs ml-1">+{r.items.length - 1} more</span>}</td>
-                    <td className="py-3"><span className={`badge-status ${priorityColors[r.priority as RequisitionPriority] || ''}`}>{r.priority}</span></td>
-                    <td className="py-3"><span className={`badge-status ${statusColors[r.status as RequisitionStatus] || ''}`}>{r.status.replace(/_/g, ' ')}</span></td>
-                    <td className="py-3 text-gray-500">{fmtDate(r.reminder_date)}</td>
-                    <td className="py-3 text-gray-500">{r.created_by_name}</td>
-                    <td className="py-3 text-gray-500">{r.created_at?.split('T')[0]}</td>
-                    <td className="py-3">
-                      <div className="flex items-center gap-2">
-                        <button onClick={() => setViewId(r.id)} className="text-blue-500 hover:text-blue-700"><Eye size={15} /></button>
-                        {isSuperAdmin() && <button onClick={() => deleteRequisition(r.id, r.indent_no)} className="text-red-400 hover:text-red-600"><Trash2 size={15} /></button>}
+            {requisitions.length === 0 ? (
+              <p
+                className="py-12 text-center"
+                style={{ fontSize: 13, color: 'var(--mute-lt)' }}
+              >
+                No requisitions found
+              </p>
+            ) : (
+              requisitions.map((r: any, i: number) => (
+                <div
+                  key={r.id}
+                  className="grid md:items-center hover:bg-[var(--color-paper-alt)] transition-colors"
+                  style={{
+                    gridTemplateColumns: '120px 1.6fr 90px 130px 110px 110px 110px 80px',
+                    padding: '14px 20px',
+                    gap: 14,
+                    borderTop: i > 0 ? '1px solid var(--rule-lt)' : '1px solid var(--rule-lt)',
+                  }}
+                >
+                  <button
+                    onClick={() => setViewId(r.id)}
+                    className="text-left"
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 12,
+                      color: 'var(--color-warm-dk)',
+                      fontWeight: 600,
+                      background: 'transparent',
+                      cursor: 'pointer',
+                    }}
+                  >
+                    {r.indent_no}
+                  </button>
+                  <div>
+                    <div style={{ fontSize: 13, fontWeight: 500 }}>{firstDesc(r)}</div>
+                    {r.items?.length > 1 && (
+                      <div
+                        style={{
+                          fontFamily: 'var(--font-mono)',
+                          fontSize: 11,
+                          color: 'var(--mute-lt)',
+                          marginTop: 2,
+                        }}
+                      >
+                        +{r.items.length - 1} more
                       </div>
-                    </td>
-                  </tr>
-                ))}
-                {requisitions.length === 0 && <tr><td colSpan={8} className="py-8 text-center text-gray-400">No requisitions found</td></tr>}
-              </tbody>
-            </table>
-          </div>
+                    )}
+                  </div>
+                  <StatusPill kind={statusMap.priority(r.priority)} label={r.priority} />
+                  <StatusPill kind={statusMap.requisition(r.status)} label={humanize(r.status)} />
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 12,
+                      color: 'var(--mute-lt)',
+                    }}
+                  >
+                    {fmtDate(r.reminder_date)}
+                  </span>
+                  <span style={{ fontSize: 12, color: 'var(--mute-lt)' }}>{r.created_by_name}</span>
+                  <span
+                    style={{
+                      fontFamily: 'var(--font-mono)',
+                      fontSize: 12,
+                      color: 'var(--mute-lt)',
+                    }}
+                  >
+                    {fmtDate(r.created_at)}
+                  </span>
+                  <div className="flex items-center gap-2 justify-end">
+                    <button
+                      onClick={() => setViewId(r.id)}
+                      style={{ color: 'var(--color-warm-dk)' }}
+                      title="View"
+                    >
+                      <Eye size={15} />
+                    </button>
+                    {isSuperAdmin() && (
+                      <button
+                        onClick={() => deleteRequisition(r.id, r.indent_no)}
+                        style={{ color: 'var(--mute-lt)' }}
+                        title="Delete"
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ))
+            )}
+          </>
         )}
       </div>
 
-      {showCreate && <CreateRequisitionModal onClose={() => setShowCreate(false)} onSuccess={() => { setShowCreate(false); qc.invalidateQueries({ queryKey: ['requisitions'] }); toast.success('Requisition submitted') }} />}
+      {showCreate && (
+        <CreateRequisitionModal
+          onClose={() => setShowCreate(false)}
+          onSuccess={() => {
+            setShowCreate(false)
+            qc.invalidateQueries({ queryKey: ['requisitions'] })
+            toast.success('Requisition submitted')
+          }}
+        />
+      )}
       {viewId && <ViewRequisitionModal requisitionId={viewId} onClose={() => setViewId(null)} />}
     </div>
   )

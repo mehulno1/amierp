@@ -28,6 +28,7 @@ export interface User {
   email: string
   name: string
   role: 'super_admin' | 'admin' | 'requisition_admin' | 'quotation_admin' | 'user' | 'accounts'
+  can_approve_requisitions: boolean
   is_active: boolean
   created_at: string
 }

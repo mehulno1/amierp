@@ -13,6 +13,7 @@ interface AuthContextType {
   isSuperAdmin: () => boolean
   isRequisitionAdmin: () => boolean
   isQuotationAdmin: () => boolean
+  canApproveRequisitions: () => boolean
   hasRole: (roles: string[]) => boolean
 }
 
@@ -61,10 +62,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const isSuperAdmin = () => user?.role === 'super_admin'
   const isRequisitionAdmin = () => ['super_admin', 'admin', 'requisition_admin'].includes(user?.role || '')
   const isQuotationAdmin = () => ['super_admin', 'admin', 'quotation_admin'].includes(user?.role || '')
+  const canApproveRequisitions = () => isAdmin() || !!user?.can_approve_requisitions
   const hasRole = (roles: string[]) => roles.includes(user?.role || '')
 
   return (
-    <AuthContext.Provider value={{ user, brands, token, isLoading, login, logout, isAdmin, isSuperAdmin, isRequisitionAdmin, isQuotationAdmin, hasRole }}>
+    <AuthContext.Provider value={{ user, brands, token, isLoading, login, logout, isAdmin, isSuperAdmin, isRequisitionAdmin, isQuotationAdmin, canApproveRequisitions, hasRole }}>
       {children}
     </AuthContext.Provider>
   )

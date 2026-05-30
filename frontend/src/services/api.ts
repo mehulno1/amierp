@@ -29,6 +29,7 @@ export const authApi = {
 // Brands
 export const brandsApi = {
   list: () => api.get('/brands'),
+  listBanks: (brandId: number) => api.get(`/brands/${brandId}/banks`),
 }
 
 // Clients
@@ -68,6 +69,7 @@ export const ordersApi = {
 export const inventoryApi = {
   getByType: (type: string) => api.get(`/inventory-items/type/${type}`),
   create: (data: any) => api.post('/inventory-items', data),
+  update: (id: number, data: any) => api.put(`/inventory-items/${id}`, data),
   adjust: (id: number, data: any) => api.post(`/inventory-items/${id}/adjust`, data),
   updateLevels: (id: number, data: any) => api.patch(`/inventory-items/${id}/levels`, data),
   getTransactions: (id: number) => api.get(`/inventory-items/${id}/transactions`),
@@ -93,6 +95,9 @@ export const requisitionsApi = {
   addQuotation: (id: number, data: any) => api.post(`/requisitions/${id}/quotations`, data),
   selectQuotation: (id: number, quotationId: number) => api.post(`/requisitions/${id}/quotations/${quotationId}/select`),
   deleteQuotation: (reqId: number, quotationId: number) => api.delete(`/requisitions/${reqId}/quotations/${quotationId}`),
+  approve: (id: number) => api.post(`/requisitions/${id}/approve`),
+  reject: (id: number, reason: string) => api.post(`/requisitions/${id}/reject`, { reason }),
+  resubmit: (id: number) => api.post(`/requisitions/${id}/resubmit`),
 }
 
 // Purchase Orders
@@ -100,6 +105,8 @@ export const purchaseOrdersApi = {
   list: (params?: any) => api.get('/purchase-orders', { params }),
   get: (id: number) => api.get(`/purchase-orders/${id}`),
   create: (data: any) => api.post('/purchase-orders', data),
+  update: (id: number, data: any) => api.put(`/purchase-orders/${id}`, data),
+  delete: (id: number) => api.delete(`/purchase-orders/${id}`),
   updateStatus: (id: number, data: any) => api.patch(`/purchase-orders/${id}/status`, data),
   updateReceivedQty: (id: number, itemId: number, data: any) => api.patch(`/purchase-orders/${id}/items/${itemId}/received`, data),
 }
@@ -118,6 +125,7 @@ export const offersApi = {
   list: (params?: any) => api.get('/offers', { params }),
   get: (id: number) => api.get(`/offers/${id}`),
   create: (data: any) => api.post('/offers', data),
+  updateStatus: (id: number, data: { status: string }) => api.patch(`/offers/${id}/status`, data),
   send: (id: number, data?: any) => api.post(`/offers/${id}/send`, data),
 }
 
@@ -142,6 +150,11 @@ export const adminApi = {
   listBrands: () => api.get('/admin/brands'),
   createBrand: (data: any) => api.post('/admin/brands', data),
   updateBrand: (id: number, data: any) => api.put(`/admin/brands/${id}`, data),
+  deleteBrand: (id: number) => api.delete(`/admin/brands/${id}`),
+  listBanks: (brandId: number) => api.get(`/admin/brands/${brandId}/banks`),
+  createBank: (brandId: number, data: any) => api.post(`/admin/brands/${brandId}/banks`, data),
+  updateBank: (brandId: number, bankId: number, data: any) => api.put(`/admin/brands/${brandId}/banks/${bankId}`, data),
+  deleteBank: (brandId: number, bankId: number) => api.delete(`/admin/brands/${brandId}/banks/${bankId}`),
   listUsers: () => api.get('/admin/users'),
   createUser: (data: any) => api.post('/admin/users', data),
   updateUser: (id: number, data: any) => api.put(`/admin/users/${id}`, data),

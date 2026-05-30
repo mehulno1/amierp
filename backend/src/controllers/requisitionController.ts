@@ -58,7 +58,7 @@ export async function createRequisition(req: AuthRequest, res: Response) {
     }
     const indent_no = await getNextDocumentNumber(effectiveBrandId, 'AEPL/IND')
     const [result] = await conn.execute(
-      'INSERT INTO requisitions (brand_id, indent_no, created_by, machine_area, priority, reminder_date, notes) VALUES (?,?,?,?,?,?,?)',
+      "INSERT INTO requisitions (brand_id, indent_no, created_by, machine_area, priority, reminder_date, notes, status) VALUES (?,?,?,?,?,?,?,'pending_approval')",
       [effectiveBrandId, indent_no, req.user!.id, machine_area ?? null, priority || 'normal', reminder_date || null, notes ?? null]
     ) as any[]
     const reqId = result.insertId
@@ -78,13 +78,64 @@ export async function createRequisition(req: AuthRequest, res: Response) {
 }
 
 export async function updateRequisitionStatus(req: AuthRequest, res: Response) {
+  const conn = await pool.getConnection()
   try {
     const { id } = req.params
     const { status, notes } = req.body
     const ids = req.userBrandIds!
-    await executeQuery(`UPDATE requisitions SET status = ?, notes = COALESCE(?, notes) WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`, [status, notes ?? null, id, ...ids])
+
+    // A requisition awaiting approval (or rejected) can only move via the dedicated
+    // approve/reject/resubmit endpoints — never through the generic status dropdown.
+    const cur = await executeQuery<any>(
+      `SELECT status FROM requisitions WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`,
+      [id, ...ids]
+    )
+    if (!cur.length) { conn.release(); return res.status(404).json({ success: false, error: 'Not found' }) }
+    if (['pending_approval', 'rejected'].includes(cur[0].status)) {
+      conn.release()
+      return res.status(400).json({ success: false, error: 'Requisition must be approved first' })
+    }
+
+    await conn.beginTransaction()
+    await conn.execute(
+      `UPDATE requisitions SET status = ?, notes = COALESCE(?, notes) WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`,
+      [status, notes ?? null, id, ...ids]
+    )
+
+    // When a requisition is marked delivered, credit the spare-parts inventory for every
+    // item that's linked to a spare part. We only credit the *outstanding* quantity
+    // (qty - received_qty) so flipping the status back and forth doesn't double-count.
+    if (status === 'delivered') {
+      const [itemsRows] = await conn.execute(
+        'SELECT id, spare_part_id, qty, received_qty FROM requisition_items WHERE requisition_id = ?',
+        [id]
+      ) as any[]
+      for (const item of itemsRows as any[]) {
+        if (!item.spare_part_id) continue
+        const outstanding = Math.max(0, parseFloat(item.qty) - parseFloat(item.received_qty || 0))
+        if (outstanding <= 0) continue
+        const [invRows] = await conn.execute(
+          'SELECT id, brand_id, current_stock FROM inventory_items WHERE id = ? AND is_active = 1',
+          [item.spare_part_id]
+        ) as any[]
+        if (!(invRows as any[]).length) continue
+        const inv = (invRows as any[])[0]
+        const newStock = parseFloat(inv.current_stock) + outstanding
+        await conn.execute('UPDATE inventory_items SET current_stock = ? WHERE id = ?', [newStock, inv.id])
+        await conn.execute(
+          'INSERT INTO inventory_transactions (brand_id, inventory_item_id, transaction_type, quantity, notes, created_by, stock_before, stock_after) VALUES (?,?,?,?,?,?,?,?)',
+          [inv.brand_id, inv.id, 'purchase', outstanding, `Requisition #${id} delivered`, req.user!.id, inv.current_stock, newStock]
+        )
+        await conn.execute('UPDATE requisition_items SET received_qty = qty WHERE id = ?', [item.id])
+      }
+    }
+
+    await conn.commit(); conn.release()
     res.json({ success: true, message: 'Status updated' })
-  } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
+  } catch (err: any) {
+    await conn.rollback(); conn.release()
+    res.status(500).json({ success: false, error: err.message })
+  }
 }
 
 export async function addVendorQuotation(req: AuthRequest, res: Response) {
@@ -93,7 +144,11 @@ export async function addVendorQuotation(req: AuthRequest, res: Response) {
     await conn.beginTransaction()
     const { id: requisitionId } = req.params
     const { vendor_id, quotation_date, validity_date, notes, items } = req.body
-    const reqRow = await executeQuery<any>('SELECT brand_id FROM requisitions WHERE id = ?', [requisitionId])
+    const reqRow = await executeQuery<any>('SELECT brand_id, status FROM requisitions WHERE id = ?', [requisitionId])
+    if (['pending_approval', 'rejected'].includes(reqRow[0]?.status)) {
+      conn.release()
+      return res.status(400).json({ success: false, error: 'Requisition must be approved before adding quotations' })
+    }
     const quotBrandId = reqRow[0]?.brand_id || req.userBrandIds![0]
     const [result] = await conn.execute(
       'INSERT INTO vendor_quotations (brand_id, requisition_id, vendor_id, quotation_date, validity_date, notes, created_by) VALUES (?,?,?,?,?,?,?)',
@@ -145,8 +200,16 @@ export async function updateRequisitionItems(req: AuthRequest, res: Response) {
   try {
     const { id } = req.params
     const ids = req.userBrandIds!
-    const rows = await executeQuery<any>(`SELECT id FROM requisitions WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`, [id, ...ids])
+    const rows = await executeQuery<any>(`SELECT id, created_by, status FROM requisitions WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`, [id, ...ids])
     if (!rows.length) { conn.release(); return res.status(404).json({ success: false, error: 'Not found' }) }
+    // super_admin can edit any requisition's items; the creator may edit their own only
+    // while it is still awaiting approval or has been rejected (i.e. before procurement).
+    const r = rows[0]
+    const isCreatorEditable = r.created_by === req.user!.id && ['pending_approval', 'rejected'].includes(r.status)
+    if (req.user!.role !== 'super_admin' && !isCreatorEditable) {
+      conn.release()
+      return res.status(403).json({ success: false, error: 'Forbidden' })
+    }
     const { items } = req.body
     await conn.beginTransaction()
     await conn.execute('DELETE FROM requisition_items WHERE requisition_id = ?', [id])
@@ -190,5 +253,60 @@ export async function selectQuotation(req: AuthRequest, res: Response) {
     await executeQuery("UPDATE vendor_quotations SET status = 'selected' WHERE id = ?", [quotationId])
     await executeQuery("UPDATE requisitions SET status = 'po_raised' WHERE id = ?", [requisitionId])
     res.json({ success: true, message: 'Quotation selected' })
+  } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
+}
+
+// ── Approval flow ──────────────────────────────────────────────────────────
+// A requisition created by a normal user sits in 'pending_approval' until a user with
+// the approve right approves it (→ 'pending', the normal start of procurement) or
+// rejects it with a reason (→ 'rejected'). The creator can then edit and resubmit.
+
+export async function approveRequisition(req: AuthRequest, res: Response) {
+  try {
+    const { id } = req.params
+    const ids = req.userBrandIds!
+    const result = await executeQuery<any>(
+      `UPDATE requisitions SET status = 'pending', approved_by = ?, approved_at = NOW(), rejection_reason = NULL
+       WHERE id = ? AND status = 'pending_approval' AND brand_id IN (${ids.map(() => '?').join(',')})`,
+      [req.user!.id, id, ...ids]
+    )
+    if (!(result as any).affectedRows) return res.status(400).json({ success: false, error: 'Requisition is not awaiting approval' })
+    res.json({ success: true, message: 'Requisition approved' })
+  } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
+}
+
+export async function rejectRequisition(req: AuthRequest, res: Response) {
+  try {
+    const { id } = req.params
+    const { reason } = req.body
+    if (!reason || !String(reason).trim()) return res.status(400).json({ success: false, error: 'Rejection reason required' })
+    const ids = req.userBrandIds!
+    const result = await executeQuery<any>(
+      `UPDATE requisitions SET status = 'rejected', rejection_reason = ?, approved_by = ?, approved_at = NOW()
+       WHERE id = ? AND status = 'pending_approval' AND brand_id IN (${ids.map(() => '?').join(',')})`,
+      [reason, req.user!.id, id, ...ids]
+    )
+    if (!(result as any).affectedRows) return res.status(400).json({ success: false, error: 'Requisition is not awaiting approval' })
+    res.json({ success: true, message: 'Requisition rejected' })
+  } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
+}
+
+export async function resubmitRequisition(req: AuthRequest, res: Response) {
+  try {
+    const { id } = req.params
+    const ids = req.userBrandIds!
+    const rows = await executeQuery<any>(
+      `SELECT created_by, status FROM requisitions WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`,
+      [id, ...ids]
+    )
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Not found' })
+    if (rows[0].status !== 'rejected') return res.status(400).json({ success: false, error: 'Only a rejected requisition can be resubmitted' })
+    const isAllowed = rows[0].created_by === req.user!.id || ['super_admin', 'admin'].includes(req.user!.role)
+    if (!isAllowed) return res.status(403).json({ success: false, error: 'Forbidden' })
+    await executeQuery(
+      "UPDATE requisitions SET status = 'pending_approval', rejection_reason = NULL, approved_by = NULL, approved_at = NULL WHERE id = ?",
+      [id]
+    )
+    res.json({ success: true, message: 'Requisition resubmitted for approval' })
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
 }

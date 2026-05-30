@@ -34,6 +34,17 @@ export const requireSuperAdmin = requireRole(['super_admin'])
 export const requireRequisitionAdmin = requireRole(['super_admin', 'admin', 'requisition_admin'])
 export const requireQuotationAdmin = requireRole(['super_admin', 'admin', 'quotation_admin'])
 
+// Approving a requisition is a per-user right (can_approve_requisitions) layered on top
+// of the role — super_admin/admin always qualify, any other role only with the flag set.
+export function requireRequisitionApprover(req: AuthRequest, res: Response, next: NextFunction) {
+  if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' })
+  const isAdmin = ['super_admin', 'admin'].includes(req.user.role)
+  if (!isAdmin && !(req.user as any).can_approve_requisitions) {
+    return res.status(403).json({ success: false, error: 'Not allowed to approve requisitions' })
+  }
+  next()
+}
+
 export async function requireBrandContext(req: AuthRequest, res: Response, next: NextFunction) {
   if (!req.user) return res.status(401).json({ success: false, error: 'Unauthorized' })
 
