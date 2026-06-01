@@ -1,23 +1,26 @@
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { ordersApi, piApi, clientsApi } from '../services/api'
-import { ArrowLeft, FileText, Pencil, X, Check, Trash2, Plus } from 'lucide-react'
+import { ArrowLeft, FileText, Pencil, X, Check, Trash2, Plus, Truck } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { useState } from 'react'
 import toast from 'react-hot-toast'
 import LoadingSpinner from '../components/LoadingSpinner'
 import PIDocument from '../components/PIDocument'
+import RecordDeliveryModal from '../components/RecordDeliveryModal'
+import type { Order, OrderDelivery } from '../types'
 
 const statusColors: Record<string, string> = {
   new_order: 'bg-blue-100 text-blue-700',
   processing: 'bg-yellow-100 text-yellow-700',
   ready_for_dispatch: 'bg-orange-100 text-orange-700',
+  partially_dispatched: 'bg-amber-100 text-amber-700',
   dispatched: 'bg-purple-100 text-purple-700',
   completed: 'bg-green-100 text-green-700',
   cancelled: 'bg-red-100 text-red-700',
 }
 
-const STATUSES = ['new_order', 'processing', 'ready_for_dispatch', 'dispatched', 'completed']
+const STATUSES = ['new_order', 'processing', 'ready_for_dispatch', 'partially_dispatched', 'dispatched', 'completed']
 
 function fmt(dateStr?: string | null) {
   if (!dateStr) return '—'
@@ -37,6 +40,7 @@ export default function OrderDetail() {
   const [editingDispatch, setEditingDispatch] = useState(false)
   const [editingClient, setEditingClient] = useState(false)
   const [editingItems, setEditingItems] = useState(false)
+  const [deliveryModal, setDeliveryModal] = useState<{ open: boolean; delivery?: OrderDelivery }>({ open: false })
 
   const { data: order, isLoading } = useQuery({
     queryKey: ['order', id],
@@ -67,6 +71,20 @@ export default function OrderDetail() {
       toast.success('Order deleted')
       navigate('/orders')
     } catch (err: any) { toast.error(err.response?.data?.error || 'Failed') }
+  }
+
+  const invalidateOrder = () => {
+    qc.invalidateQueries({ queryKey: ['order', id] })
+    qc.invalidateQueries({ queryKey: ['orders'] })
+  }
+
+  const deleteDelivery = async (deliveryId: number, deliveryNo: number) => {
+    if (!window.confirm(`Delete delivery #${deliveryNo}? Dispatched quantities will be reversed.`)) return
+    try {
+      await ordersApi.deleteDelivery(parseInt(id!), deliveryId)
+      invalidateOrder()
+      toast.success('Delivery deleted')
+    } catch (err: any) { toast.error(err.response?.data?.error || 'Failed to delete delivery') }
   }
 
   const deletePI = async (piId: number) => {
@@ -145,12 +163,30 @@ export default function OrderDetail() {
         isSuperAdmin={isSuperAdmin()}
         editing={editingItems}
         setEditing={setEditingItems}
+        deliveriesLocked={!!order.deliveries?.length}
         onSaved={() => qc.invalidateQueries({ queryKey: ['order', id] })}
+      />
+
+      <DeliveriesCard
+        order={order}
+        isAdmin={isAdmin()}
+        onRecord={() => setDeliveryModal({ open: true })}
+        onEdit={(d: OrderDelivery) => setDeliveryModal({ open: true, delivery: d })}
+        onDelete={deleteDelivery}
       />
 
       <DispatchCard order={order} isAdmin={isAdmin() || isUser} editing={editingDispatch} setEditing={setEditingDispatch} onSaved={() => qc.invalidateQueries({ queryKey: ['order', id] })} />
 
       {showPI && pi?.id && <PIDocument piId={pi.id} onClose={() => setShowPI(false)} />}
+
+      {deliveryModal.open && (
+        <RecordDeliveryModal
+          order={order as Order}
+          delivery={deliveryModal.delivery}
+          onClose={() => setDeliveryModal({ open: false })}
+          onSaved={() => { setDeliveryModal({ open: false }); invalidateOrder(); toast.success('Delivery saved') }}
+        />
+      )}
     </div>
   )
 }
@@ -407,7 +443,7 @@ function DispatchCard({ order, isAdmin, editing, setEditing, onSaved }: any) {
 
 // ─── Order Items Card ─────────────────────────────────────────────────────────
 
-function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, onSaved }: any) {
+function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, deliveriesLocked, onSaved }: any) {
   const [rows, setRows] = useState<any[]>([])
   const [saving, setSaving] = useState(false)
 
@@ -504,7 +540,11 @@ function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, onSaved 
     <div className="card">
       <div className="flex items-center justify-between mb-4">
         <h3 className="font-medium text-gray-900">Order Items</h3>
-        {isSuperAdmin && <button onClick={startEdit} className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"><Pencil size={14} /></button>}
+        {isSuperAdmin && (
+          deliveriesLocked
+            ? <span title="Item edits are locked once a delivery has been recorded for this order." className="text-gray-300 p-1 cursor-not-allowed"><Pencil size={14} /></span>
+            : <button onClick={startEdit} className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"><Pencil size={14} /></button>
+        )}
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -515,25 +555,122 @@ function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, onSaved 
               <th className="pb-2 text-gray-500 font-medium">Qty (Pcs)</th>
               <th className="pb-2 text-gray-500 font-medium">Qty (Kgs)</th>
               <th className="pb-2 text-gray-500 font-medium">UOM</th>
+              <th className="pb-2 text-gray-500 font-medium">Delivered</th>
+              <th className="pb-2 text-gray-500 font-medium">Balance</th>
               <th className="pb-2 text-gray-500 font-medium">Rate</th>
               <th className="pb-2 text-gray-500 font-medium">Total</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-gray-50">
-            {(order.items || []).map((item: any, idx: number) => (
-              <tr key={item.id}>
-                <td className="py-2 text-gray-500">{idx + 1}</td>
-                <td className="py-2">{item.description || item.product_name}</td>
-                <td className="py-2">{item.quantity_pcs || 0}</td>
-                <td className="py-2">{item.quantity_kgs ? Number(item.quantity_kgs).toLocaleString('en-IN') : 0}</td>
-                <td className="py-2">{item.uom}</td>
-                <td className="py-2">₹{Number(item.rate).toLocaleString('en-IN')}</td>
-                <td className="py-2 font-medium">₹{Number(item.total).toLocaleString('en-IN')}</td>
-              </tr>
-            ))}
+            {(order.items || []).map((item: any, idx: number) => {
+              const uom = (item.uom || '').toLowerCase()
+              const kgsDriven = uom === 'kgs' || uom === 'mt'
+              const unit = kgsDriven ? 'kgs' : 'pcs'
+              const ordered = kgsDriven ? Number(item.quantity_kgs || 0) : Number(item.quantity_pcs || 0)
+              const delivered = kgsDriven ? Number(item.delivered_kgs || 0) : Number(item.delivered_pcs || 0)
+              const balance = Math.max(0, ordered - delivered)
+              const pct = ordered > 0 ? Math.min(100, Math.round((delivered / ordered) * 100)) : 0
+              return (
+                <tr key={item.id}>
+                  <td className="py-2 text-gray-500">{idx + 1}</td>
+                  <td className="py-2">{item.description || item.product_name}</td>
+                  <td className="py-2">{item.quantity_pcs || 0}</td>
+                  <td className="py-2">{item.quantity_kgs ? Number(item.quantity_kgs).toLocaleString('en-IN') : 0}</td>
+                  <td className="py-2">{item.uom}</td>
+                  <td className="py-2">
+                    <div className="text-gray-700">{Number(delivered).toLocaleString('en-IN', { maximumFractionDigits: 3 })} {unit}</div>
+                    <div className="mt-1 h-1.5 w-20 rounded-full bg-gray-100 overflow-hidden">
+                      <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
+                    </div>
+                  </td>
+                  <td className="py-2 font-medium">{Number(balance).toLocaleString('en-IN', { maximumFractionDigits: 3 })} {unit}</td>
+                  <td className="py-2">₹{Number(item.rate).toLocaleString('en-IN')}</td>
+                  <td className="py-2 font-medium">₹{Number(item.total).toLocaleString('en-IN')}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
+    </div>
+  )
+}
+
+// ─── Deliveries Card ──────────────────────────────────────────────────────────
+
+function DeliveriesCard({ order, isAdmin, onRecord, onEdit, onDelete }: any) {
+  const deliveries: OrderDelivery[] = order.deliveries || []
+  const itemUom = (orderItemId: number) => {
+    const it = (order.items || []).find((i: any) => i.id === orderItemId)
+    const uom = (it?.uom || '').toLowerCase()
+    return uom === 'kgs' || uom === 'mt' ? 'kgs' : 'pcs'
+  }
+
+  return (
+    <div className="card">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-medium text-gray-900">Deliveries {deliveries.length > 0 && <span className="text-gray-400 font-normal">({deliveries.length})</span>}</h3>
+        {isAdmin && order.status !== 'cancelled' && (
+          <button onClick={onRecord} className="btn-primary py-1.5 text-sm flex items-center gap-1.5">
+            <Truck size={14} /> Record Dispatch / Delivery
+          </button>
+        )}
+      </div>
+
+      {deliveries.length === 0 ? (
+        <p className="text-gray-400 text-sm">No deliveries recorded yet.</p>
+      ) : (
+        <div className="space-y-4">
+          {deliveries.map(d => (
+            <div key={d.id} className="border border-gray-100 rounded-lg p-4">
+              <div className="flex items-start justify-between mb-3">
+                <div>
+                  <span className="font-medium text-gray-900">Delivery #{d.delivery_no}</span>
+                  <span className="text-gray-400 text-sm ml-2">{fmt(d.delivery_date)}</span>
+                </div>
+                {isAdmin && (
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => onEdit(d)} className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100" title="Edit delivery"><Pencil size={14} /></button>
+                    <button onClick={() => onDelete(d.id, d.delivery_no)} className="text-red-400 hover:text-red-600 p-1 rounded hover:bg-red-50" title="Delete delivery"><Trash2 size={14} /></button>
+                  </div>
+                )}
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-6 gap-y-1.5 text-sm mb-3">
+                {d.dispatched_by && <Row label="Dispatched By" value={d.dispatched_by} />}
+                {d.courier_name && <Row label="Courier" value={d.courier_name} />}
+                {d.transporter && <Row label="Transporter" value={d.transporter} />}
+                {d.awb_number && <Row label="AWB No." value={d.awb_number} />}
+                {d.vehicle_no && <Row label="Vehicle No." value={d.vehicle_no} />}
+                {d.awb_link && <div><dt className="text-gray-500">AWB Link</dt><dd><a href={d.awb_link} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline text-xs break-all">{d.awb_link}</a></dd></div>}
+                {d.lr_link && <div><dt className="text-gray-500">LR Link</dt><dd><a href={d.lr_link} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline text-xs break-all">{d.lr_link}</a></dd></div>}
+              </div>
+              {d.notes && <p className="text-sm text-gray-600 mb-3">{d.notes}</p>}
+
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="text-left border-b border-gray-100">
+                    <th className="pb-1.5 text-gray-500 font-medium">Item</th>
+                    <th className="pb-1.5 text-gray-500 font-medium text-right">Quantity</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-50">
+                  {d.items.map(di => {
+                    const unit = itemUom(di.order_item_id)
+                    const qty = unit === 'kgs' ? Number(di.quantity_kgs || 0) : Number(di.quantity_pcs || 0)
+                    return (
+                      <tr key={di.id}>
+                        <td className="py-1.5">{di.description || di.product_name || `Item #${di.order_item_id}`}</td>
+                        <td className="py-1.5 text-right font-medium">{qty.toLocaleString('en-IN', { maximumFractionDigits: 3 })} {unit}</td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   )
 }

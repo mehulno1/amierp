@@ -4,6 +4,7 @@ const ORDER: Record<string, StatusKind> = {
   new_order: 'open',
   processing: 'review',
   ready_for_dispatch: 'hot',
+  partially_dispatched: 'review',
   dispatched: 'review',
   completed: 'confirmed',
   cancelled: 'overdue',

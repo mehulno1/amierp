@@ -105,7 +105,18 @@ export async function updateRequisitionStatus(req: AuthRequest, res: Response) {
     // When a requisition is marked delivered, credit the spare-parts inventory for every
     // item that's linked to a spare part. We only credit the *outstanding* quantity
     // (qty - received_qty) so flipping the status back and forth doesn't double-count.
-    if (status === 'delivered') {
+    // The GRN flow (po_receipts) is now the single inventory-crediting path. If any goods
+    // receipt exists for this requisition's PO, that flow already credited inventory and
+    // maintains received_qty — so skip the legacy credit here to avoid double-counting.
+    // The legacy credit remains ONLY for no-PO / manually-closed requisitions.
+    const [grnRows] = await conn.execute(
+      `SELECT COUNT(*) as cnt FROM po_receipts pr
+       JOIN purchase_orders po ON po.id = pr.po_id
+       WHERE po.requisition_id = ?`,
+      [id]
+    ) as any[]
+    const hasGrn = (grnRows as any[])[0].cnt > 0
+    if (status === 'delivered' && !hasGrn) {
       const [itemsRows] = await conn.execute(
         'SELECT id, spare_part_id, qty, received_qty FROM requisition_items WHERE requisition_id = ?',
         [id]

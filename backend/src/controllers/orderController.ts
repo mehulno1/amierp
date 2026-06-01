@@ -13,13 +13,20 @@ export async function getOrders(req: AuthRequest, res: Response) {
     let sql = `SELECT o.*, c.name as client_name, b.name as brand_name,
                u.name as prepared_by_name,
                f.total_amount, f.payment_received, f.payment_method,
-               pi.id as pi_id
+               pi.id as pi_id,
+               dr.tot_pcs, dr.tot_kgs, dr.del_pcs, dr.del_kgs
                FROM new_orders o
                JOIN new_clients c ON o.client_id = c.id
                JOIN brands b ON o.brand_id = b.id
                LEFT JOIN new_users u ON o.prepared_by = u.id
                LEFT JOIN order_financials f ON o.id = f.order_id
                LEFT JOIN proforma_invoices pi ON o.id = pi.order_id
+               LEFT JOIN (
+                 SELECT order_id,
+                        SUM(quantity_pcs) AS tot_pcs, SUM(quantity_kgs) AS tot_kgs,
+                        SUM(delivered_pcs) AS del_pcs, SUM(delivered_kgs) AS del_kgs
+                 FROM order_items GROUP BY order_id
+               ) dr ON o.id = dr.order_id
                WHERE o.brand_id IN (${ids.map(() => '?').join(',')})`
     const params: any[] = [...ids]
     if (status) { sql += ' AND o.status = ?'; params.push(status) }
@@ -55,6 +62,21 @@ export async function getOrder(req: AuthRequest, res: Response) {
     order.financials = (await executeQuery('SELECT * FROM order_financials WHERE order_id = ?', [id]))[0] || null
     order.dispatch = (await executeQuery('SELECT * FROM dispatch_details WHERE order_id = ?', [id]))[0] || null
     order.pi = (await executeQuery('SELECT pi_no, pi_date, status FROM proforma_invoices WHERE order_id = ?', [id]))[0] || null
+    // Multi-delivery challans (Part A): headers + nested line quantities joined to order_items.
+    // Same shape as orderDeliveryController.listDeliveries. order.dispatch (legacy) is untouched.
+    const deliveries = await executeQuery<any>('SELECT * FROM order_deliveries WHERE order_id = ? ORDER BY delivery_no ASC', [id])
+    for (const d of deliveries) {
+      d.items = await executeQuery<any>(
+        `SELECT di.id, di.delivery_id, di.order_item_id, di.quantity_pcs, di.quantity_kgs,
+                oi.description, oi.product_name, oi.variant_name, oi.uom,
+                oi.quantity_pcs AS ordered_pcs, oi.quantity_kgs AS ordered_kgs
+         FROM order_delivery_items di
+         JOIN order_items oi ON di.order_item_id = oi.id
+         WHERE di.delivery_id = ? ORDER BY di.id ASC`,
+        [d.id]
+      )
+    }
+    order.deliveries = deliveries
     res.json({ success: true, data: order })
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
 }
@@ -185,6 +207,8 @@ export async function hardDeleteOrder(req: AuthRequest, res: Response) {
     await conn.execute('DELETE FROM proforma_invoices WHERE order_id = ?', [id])
     await conn.execute('DELETE FROM order_financials WHERE order_id = ?', [id])
     await conn.execute('DELETE FROM dispatch_details WHERE order_id = ?', [id])
+    await conn.execute('DELETE FROM order_delivery_items WHERE delivery_id IN (SELECT id FROM order_deliveries WHERE order_id = ?)', [id])
+    await conn.execute('DELETE FROM order_deliveries WHERE order_id = ?', [id])
     await conn.execute('DELETE FROM order_items WHERE order_id = ?', [id])
     await conn.execute('DELETE FROM new_orders WHERE id = ?', [id])
     await conn.commit()
@@ -204,6 +228,10 @@ export async function updateOrderItems(req: AuthRequest, res: Response) {
     const ids = req.userBrandIds!
     const orders = await executeQuery<any>(`SELECT id FROM new_orders WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`, [id, ...ids])
     if (!orders.length) { conn.release(); return res.status(404).json({ success: false, error: 'Order not found' }) }
+    // Once any delivery exists, the line set is frozen: replacing order_items would orphan
+    // delivery history and desync the delivered_pcs/kgs cache.
+    const deliv = await executeQuery<any>('SELECT 1 FROM order_deliveries WHERE order_id = ? LIMIT 1', [id])
+    if (deliv.length) { conn.release(); return res.status(409).json({ success: false, error: 'Cannot edit items: this order has deliveries recorded' }) }
     const { items } = req.body
     await conn.beginTransaction()
     await conn.execute('DELETE FROM order_items WHERE order_id = ?', [id])

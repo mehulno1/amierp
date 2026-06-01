@@ -17,6 +17,7 @@ const statusColors: Record<string, string> = {
   new_order: 'bg-blue-100 text-blue-700',
   processing: 'bg-yellow-100 text-yellow-700',
   ready_for_dispatch: 'bg-orange-100 text-orange-700',
+  partially_dispatched: 'bg-amber-100 text-amber-700',
   dispatched: 'bg-purple-100 text-purple-700',
   completed: 'bg-green-100 text-green-700',
   cancelled: 'bg-red-100 text-red-700',
@@ -97,6 +98,7 @@ export default function Orders() {
             <option value="new_order">New Order</option>
             <option value="processing">Processing</option>
             <option value="ready_for_dispatch">Ready for Dispatch</option>
+            <option value="partially_dispatched">Partially Dispatched</option>
             <option value="dispatched">Dispatched</option>
             <option value="completed">Completed</option>
             <option value="cancelled">Cancelled</option>
@@ -134,6 +136,7 @@ export default function Orders() {
                       <span className={`badge-status ${statusColors[o.status] || 'bg-gray-100 text-gray-600'}`}>
                         {o.status.replace(/_/g, ' ')}
                       </span>
+                      <DeliveryBadge order={o} />
                     </td>
                     {!isUser && (
                       <td className="py-3">
@@ -186,6 +189,31 @@ export default function Orders() {
       )}
 
       {viewPiId && <PIDocument piId={viewPiId} onClose={() => setViewPiId(null)} />}
+    </div>
+  )
+}
+
+// Small "X% delivered" / balance badge driven by the order rollup fields.
+// Picks the unit that actually carries an ordered total; guards against null rollups.
+function DeliveryBadge({ order }: { order: any }) {
+  const totPcs = Number(order.tot_pcs || 0)
+  const totKgs = Number(order.tot_kgs || 0)
+  const delPcs = Number(order.del_pcs || 0)
+  const delKgs = Number(order.del_kgs || 0)
+
+  const kgsDriven = totKgs > 0 && totPcs === 0
+  const total = kgsDriven ? totKgs : totPcs
+  const delivered = kgsDriven ? delKgs : delPcs
+  if (total <= 0 || delivered <= 0) return null
+
+  const pct = Math.min(100, Math.round((delivered / total) * 100))
+  if (pct >= 100) return null
+
+  const balance = Math.max(0, total - delivered)
+  const unit = kgsDriven ? 'kgs' : 'pcs'
+  return (
+    <div className="mt-1 text-[11px] text-amber-600" title={`Balance: ${balance.toLocaleString('en-IN', { maximumFractionDigits: 3 })} ${unit}`}>
+      {pct}% delivered
     </div>
   )
 }

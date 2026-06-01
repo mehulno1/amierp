@@ -87,7 +87,7 @@ export interface InventoryItem {
   stockpoint_name?: string
 }
 
-export type OrderStatus = 'new_order' | 'processing' | 'ready_for_dispatch' | 'dispatched' | 'completed' | 'cancelled'
+export type OrderStatus = 'new_order' | 'processing' | 'ready_for_dispatch' | 'partially_dispatched' | 'dispatched' | 'completed' | 'cancelled'
 
 export interface Order {
   id: number
@@ -104,6 +104,11 @@ export interface Order {
   financials?: OrderFinancials
   dispatch?: DispatchDetails
   pi?: { pi_no: string; pi_date: string; status: string }
+  deliveries?: OrderDelivery[]
+  tot_pcs?: number | null
+  tot_kgs?: number | null
+  del_pcs?: number | null
+  del_kgs?: number | null
 }
 
 export interface OrderItem {
@@ -118,6 +123,41 @@ export interface OrderItem {
   uom: string
   rate: number
   total: number
+  delivered_pcs: number
+  delivered_kgs: number
+}
+
+export interface OrderDeliveryItem {
+  id: number
+  delivery_id: number
+  order_item_id: number
+  quantity_pcs: number
+  quantity_kgs: number
+  description?: string
+  product_name?: string
+  variant_name?: string
+  uom?: string
+  ordered_pcs?: number
+  ordered_kgs?: number
+}
+
+export interface OrderDelivery {
+  id: number
+  order_id: number
+  delivery_no: number
+  delivery_date: string
+  dispatched_by?: string | null
+  courier_name?: string | null
+  transporter?: string | null
+  awb_number?: string | null
+  awb_link?: string | null
+  lr_link?: string | null
+  vehicle_no?: string | null
+  notes?: string | null
+  created_by?: number | null
+  created_at?: string
+  updated_at?: string
+  items: OrderDeliveryItem[]
 }
 
 export interface OrderFinancials {
@@ -234,17 +274,49 @@ export interface PurchaseOrder {
   terms_payment?: string
   notes?: string
   items?: PurchaseOrderItem[]
+  ordered_qty?: number | null
+  received_qty_total?: number | null
 }
 
 export interface PurchaseOrderItem {
   id: number
   material_no?: string
+  spare_part_id?: number | null
   description: string
   qty: number
   uom: string
   rate: number
   total: number
   received_qty: number
+}
+
+export interface PoReceiptItem {
+  id?: number
+  receipt_id?: number
+  po_item_id: number
+  received_qty: number
+  description?: string
+  uom?: string
+  ordered_qty?: number
+  line_received_qty?: number
+}
+
+export interface PoReceipt {
+  id: number
+  brand_id?: number
+  po_id: number
+  receipt_no: string
+  receipt_date: string
+  received_by?: number | null
+  received_by_name?: string | null
+  transporter?: string | null
+  lr_number?: string | null
+  vehicle_no?: string | null
+  vendor_invoice_no?: string | null
+  notes?: string | null
+  created_at?: string
+  updated_at?: string
+  items: PoReceiptItem[]
 }
 
 export type EnquiryStatus = 'new' | 'offer_sent' | 'negotiation' | 'order_received' | 'lost' | 'expired'

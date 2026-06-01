@@ -63,6 +63,10 @@ export const ordersApi = {
   updateBilling: (id: number, data: any) => api.put(`/orders/${id}/billing`, data),
   updatePayment: (id: number, data: any) => api.put(`/orders/${id}/payment`, data),
   updateDispatch: (id: number, data: any) => api.put(`/dispatch/${id}`, data),
+  listDeliveries: (orderId: number) => api.get(`/orders/${orderId}/deliveries`),
+  createDelivery: (orderId: number, payload: any) => api.post(`/orders/${orderId}/deliveries`, payload),
+  updateDelivery: (orderId: number, deliveryId: number, payload: any) => api.put(`/orders/${orderId}/deliveries/${deliveryId}`, payload),
+  deleteDelivery: (orderId: number, deliveryId: number) => api.delete(`/orders/${orderId}/deliveries/${deliveryId}`),
 }
 
 // Inventory
@@ -108,7 +112,10 @@ export const purchaseOrdersApi = {
   update: (id: number, data: any) => api.put(`/purchase-orders/${id}`, data),
   delete: (id: number) => api.delete(`/purchase-orders/${id}`),
   updateStatus: (id: number, data: any) => api.patch(`/purchase-orders/${id}/status`, data),
-  updateReceivedQty: (id: number, itemId: number, data: any) => api.patch(`/purchase-orders/${id}/items/${itemId}/received`, data),
+  listReceipts: (poId: number) => api.get(`/purchase-orders/${poId}/receipts`),
+  createReceipt: (poId: number, payload: any) => api.post(`/purchase-orders/${poId}/receipts`, payload),
+  updateReceipt: (poId: number, receiptId: number, payload: any) => api.put(`/purchase-orders/${poId}/receipts/${receiptId}`, payload),
+  deleteReceipt: (poId: number, receiptId: number) => api.delete(`/purchase-orders/${poId}/receipts/${receiptId}`),
 }
 
 // Enquiries

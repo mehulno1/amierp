@@ -415,6 +415,31 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
             {req?.reminder_date && <span className="badge-status bg-blue-100 text-blue-700">Reminder: {fmtDate(req.reminder_date)}</span>}
           </div>
 
+          {/* Received / balance summary — aggregated from the requisition line items
+              (each carries qty ordered + received_qty credited on PO goods receipts). */}
+          {(() => {
+            const lines = req?.items || []
+            const ordered = lines.reduce((s: number, it: any) => s + (Number(it.qty) || 0), 0)
+            const received = lines.reduce((s: number, it: any) => s + (Number(it.received_qty) || 0), 0)
+            if (ordered <= 0) return null
+            const balance = Math.max(ordered - received, 0)
+            const pct = Math.min((received / ordered) * 100, 100)
+            const done = balance <= 0
+            return (
+              <div className="rounded-lg border border-gray-200 p-3">
+                <div className="flex items-center justify-between text-sm mb-1.5">
+                  <span className="font-medium text-gray-700">Received against indent</span>
+                  <span className={done ? 'text-green-600 font-medium' : 'text-orange-600 font-medium'}>
+                    {received} / {ordered}{balance > 0 ? ` · ${balance} pending` : ' · complete'}
+                  </span>
+                </div>
+                <div className="h-1.5 w-full rounded-full bg-gray-100 overflow-hidden">
+                  <div className={`h-full rounded-full ${done ? 'bg-green-500' : 'bg-blue-500'}`} style={{ width: `${pct}%` }} />
+                </div>
+              </div>
+            )
+          })()}
+
           {/* Approval gate — banner + actions */}
           {isPendingApproval && (
             <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 flex items-center justify-between gap-3">

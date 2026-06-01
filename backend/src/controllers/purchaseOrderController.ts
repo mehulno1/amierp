@@ -7,7 +7,10 @@ export async function getPurchaseOrders(req: AuthRequest, res: Response) {
   try {
     const { status } = req.query
     const ids = req.brandId ? [req.brandId] : req.userBrandIds!
-    let sql = `SELECT po.*, v.name as vendor_name, b.name as brand_name FROM purchase_orders po JOIN vendors v ON po.vendor_id = v.id JOIN brands b ON po.brand_id = b.id WHERE po.brand_id IN (${ids.map(() => '?').join(',')})`
+    let sql = `SELECT po.*, v.name as vendor_name, b.name as brand_name,
+        (SELECT COALESCE(SUM(qty),0) FROM purchase_order_items WHERE po_id = po.id) as ordered_qty,
+        (SELECT COALESCE(SUM(received_qty),0) FROM purchase_order_items WHERE po_id = po.id) as received_qty_total
+      FROM purchase_orders po JOIN vendors v ON po.vendor_id = v.id JOIN brands b ON po.brand_id = b.id WHERE po.brand_id IN (${ids.map(() => '?').join(',')})`
     const params: any[] = [...ids]
     if (status) { sql += ' AND po.status = ?'; params.push(status) }
     sql += ' ORDER BY po.created_at DESC'
@@ -22,7 +25,9 @@ export async function getPurchaseOrder(req: AuthRequest, res: Response) {
     const ids = req.brandId ? [req.brandId] : req.userBrandIds!
     const pos = await executeQuery<any>(
       `SELECT po.*, v.name as vendor_name, v.contact_person as vendor_contact, v.address as vendor_address, v.city as vendor_city, v.mobile as vendor_mobile, v.gstin as vendor_gstin,
-              b.name as brand_name, b.address as brand_address, b.phone as brand_phone, b.email as brand_email, b.gstin as brand_gstin, b.pan as brand_pan
+              b.name as brand_name, b.address as brand_address, b.phone as brand_phone, b.email as brand_email, b.gstin as brand_gstin, b.pan as brand_pan,
+              (SELECT COALESCE(SUM(qty),0) FROM purchase_order_items WHERE po_id = po.id) as ordered_qty,
+              (SELECT COALESCE(SUM(received_qty),0) FROM purchase_order_items WHERE po_id = po.id) as received_qty_total
        FROM purchase_orders po JOIN vendors v ON po.vendor_id = v.id JOIN brands b ON po.brand_id = b.id WHERE po.id = ? AND po.brand_id IN (${ids.map(() => '?').join(',')})`,
       [id, ...ids]
     )
@@ -60,8 +65,8 @@ export async function createPurchaseOrder(req: AuthRequest, res: Response) {
       const rate = parseFloat(item.rate) || 0
       const total = parseFloat((qty * rate).toFixed(2))
       await conn.execute(
-        'INSERT INTO purchase_order_items (po_id, material_no, description, qty, uom, rate, total) VALUES (?,?,?,?,?,?,?)',
-        [poId, item.material_no ?? null, item.description, qty, item.uom || 'nos', rate, total]
+        'INSERT INTO purchase_order_items (po_id, material_no, description, qty, uom, rate, total, spare_part_id) VALUES (?,?,?,?,?,?,?,?)',
+        [poId, item.material_no ?? null, item.description, qty, item.uom || 'nos', rate, total, item.spare_part_id || null]
       )
     }
     await conn.commit(); conn.release()
@@ -94,16 +99,23 @@ export async function updatePurchaseOrder(req: AuthRequest, res: Response) {
        terms_gst ?? null, terms_delivery ?? null, terms_delivery_instructions ?? null, terms_supply_basis ?? null, terms_payment ?? null, notes ?? null, id]
     )
     if (Array.isArray(items)) {
-      // Replace the line items wholesale — easier than reconciling row IDs and the PO is
-      // not delivery-tracked yet at this stage in the flow.
+      // Once any goods receipt (GRN) exists against this PO, the line set is frozen —
+      // received_qty is a recomputed cache keyed on purchase_order_items.id, so replacing
+      // the lines would orphan the receipt history. Header/terms-only edits stay allowed.
+      const [recv] = await conn.execute('SELECT COUNT(*) as cnt FROM po_receipts WHERE po_id = ?', [id]) as any[]
+      if ((recv as any[])[0].cnt > 0) {
+        await conn.rollback(); conn.release()
+        return res.status(409).json({ success: false, error: 'Cannot edit line items: goods receipts exist for this PO' })
+      }
+      // Replace the line items wholesale — easier than reconciling row IDs.
       await conn.execute('DELETE FROM purchase_order_items WHERE po_id = ?', [id])
       for (const item of items) {
         const qty = parseFloat(item.qty) || 0
         const rate = parseFloat(item.rate) || 0
         const total = parseFloat((qty * rate).toFixed(2))
         await conn.execute(
-          'INSERT INTO purchase_order_items (po_id, material_no, description, qty, uom, rate, total) VALUES (?,?,?,?,?,?,?)',
-          [id, item.material_no ?? null, item.description, qty, item.uom || 'nos', rate, total]
+          'INSERT INTO purchase_order_items (po_id, material_no, description, qty, uom, rate, total, spare_part_id) VALUES (?,?,?,?,?,?,?,?)',
+          [id, item.material_no ?? null, item.description, qty, item.uom || 'nos', rate, total, item.spare_part_id || null]
         )
       }
     }
@@ -122,6 +134,10 @@ export async function deletePurchaseOrder(req: AuthRequest, res: Response) {
     const ids = req.userBrandIds!
     const rows = await executeQuery<any>(`SELECT id FROM purchase_orders WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`, [id, ...ids])
     if (!rows.length) { conn.release(); return res.status(404).json({ success: false, error: 'PO not found' }) }
+    // A PO with goods receipts against it is part of the inventory audit trail; deleting it
+    // would orphan GRN history and the inventory credits. Block it.
+    const recv = await executeQuery<any>('SELECT COUNT(*) as cnt FROM po_receipts WHERE po_id = ?', [id])
+    if (recv[0].cnt > 0) { conn.release(); return res.status(409).json({ success: false, error: 'Cannot delete PO: goods receipts exist' }) }
     await conn.beginTransaction()
     await conn.execute('DELETE FROM purchase_order_items WHERE po_id = ?', [id])
     await conn.execute('DELETE FROM purchase_orders WHERE id = ?', [id])
@@ -143,29 +159,5 @@ export async function updatePOStatus(req: AuthRequest, res: Response) {
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
 }
 
-export async function updateReceivedQty(req: AuthRequest, res: Response) {
-  try {
-    const { id, item_id } = req.params
-    const { received_qty } = req.body
-    await executeQuery('UPDATE purchase_order_items SET received_qty = ? WHERE id = ? AND po_id = ?', [received_qty, item_id, id])
-    // Check if all items fully received → update PO status
-    const items = await executeQuery<any>('SELECT qty, received_qty FROM purchase_order_items WHERE po_id = ?', [id])
-    const allDelivered = items.every((i: any) => i.received_qty >= i.qty)
-    const anyDelivered = items.some((i: any) => i.received_qty > 0)
-    if (allDelivered) {
-      await executeQuery("UPDATE purchase_orders SET status = 'delivered' WHERE id = ?", [id])
-      // update requisition status
-      const pos = await executeQuery<any>('SELECT requisition_id FROM purchase_orders WHERE id = ?', [id])
-      if (pos[0]?.requisition_id) {
-        await executeQuery("UPDATE requisitions SET status = 'delivered' WHERE id = ?", [pos[0].requisition_id])
-      }
-    } else if (anyDelivered) {
-      await executeQuery("UPDATE purchase_orders SET status = 'partially_delivered' WHERE id = ?", [id])
-      const pos = await executeQuery<any>('SELECT requisition_id FROM purchase_orders WHERE id = ?', [id])
-      if (pos[0]?.requisition_id) {
-        await executeQuery("UPDATE requisitions SET status = 'partially_delivered' WHERE id = ?", [pos[0].requisition_id])
-      }
-    }
-    res.json({ success: true, message: 'Received qty updated' })
-  } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
-}
+// updateReceivedQty was removed: received_qty is now a recomputed cache maintained by the
+// GRN flow (poReceiptController). Receipts are recorded via POST /purchase-orders/:id/receipts.

@@ -2,12 +2,13 @@ import { useState, useMemo, useEffect } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useLocation } from 'react-router-dom'
 import { purchaseOrdersApi, vendorsApi } from '../services/api'
-import { Plus, FileText, Download, Search, Edit2, Trash2, Trash } from 'lucide-react'
+import { Plus, FileText, Download, Search, Edit2, Trash2, Trash, Truck, X } from 'lucide-react'
 import { useForm, useFieldArray, useWatch } from 'react-hook-form'
 import toast from 'react-hot-toast'
 import LoadingSpinner from '../components/LoadingSpinner'
 import type { PurchaseOrder } from '../types'
 import PODocument from '../components/PODocument'
+import POReceipts from '../components/POReceipts'
 import { useAuth } from '../hooks/useAuth'
 import { useSortable } from '../hooks/useSortable'
 import { SortIcon, thSort } from '../components/SortIcon'
@@ -227,6 +228,47 @@ function POFormModal({ po, onClose, onSuccess }: { po?: any; onClose: () => void
   )
 }
 
+// Goods-receipt (GRN) drawer for a PO. Loads the full PO (line items carry received_qty)
+// then hands it to POReceipts, which owns the receipt history + record form.
+function POReceiptsModal({ poId, onClose }: { poId: number; onClose: () => void }) {
+  const qc = useQueryClient()
+  const { data: po, isLoading } = useQuery({
+    queryKey: ['purchase-order', poId],
+    queryFn: () => purchaseOrdersApi.get(poId).then(r => r.data.data),
+  })
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[90vh] flex flex-col">
+        <div className="flex items-center justify-between p-5 border-b">
+          <h2 className="font-semibold text-gray-900">Goods Receipts — {po?.po_no || `PO #${poId}`}</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600"><X size={18} /></button>
+        </div>
+        <div className="overflow-y-auto flex-1 p-5">
+          {isLoading || !po ? <LoadingSpinner /> : (
+            <POReceipts po={po} onChanged={() => qc.invalidateQueries({ queryKey: ['purchase-orders'] })} />
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+// "Received X/Y" balance badge for the PO list, guarding null totals.
+function ReceivedBadge({ po }: { po: any }) {
+  const ordered = po.ordered_qty
+  const received = po.received_qty_total
+  if (ordered == null || Number(ordered) === 0) return <span className="text-gray-400">—</span>
+  const r = Number(received) || 0
+  const o = Number(ordered)
+  const done = r >= o
+  return (
+    <span className={`badge-status ${done ? 'bg-green-100 text-green-700' : r > 0 ? 'bg-orange-100 text-orange-700' : 'bg-gray-100 text-gray-600'}`}>
+      {r}/{o}
+    </span>
+  )
+}
+
 export default function PurchaseOrders() {
   const qc = useQueryClient()
   const location = useLocation()
@@ -236,6 +278,7 @@ export default function PurchaseOrders() {
   const [search, setSearch] = useState('')
   const [formModal, setFormModal] = useState<{ open: boolean; po?: any }>({ open: false })
   const [viewPO, setViewPO] = useState<number | null>(null)
+  const [receiptsPO, setReceiptsPO] = useState<number | null>(null)
   const [editLoadingId, setEditLoadingId] = useState<number | null>(null)
 
   useEffect(() => {
@@ -325,6 +368,7 @@ export default function PurchaseOrders() {
               <th className={thSort} onClick={() => toggle('po_date')}>Date {si('po_date')}</th>
               <th className={thSort} onClick={() => toggle('quotation_no')}>Quotation Ref {si('quotation_no')}</th>
               <th className={thSort} onClick={() => toggle('status')}>Status {si('status')}</th>
+              <th className="pb-3 text-gray-500 font-medium">Received</th>
               <th className="pb-3 text-gray-500 font-medium">Actions</th>
             </tr></thead>
             <tbody className="divide-y divide-gray-50">
@@ -336,9 +380,11 @@ export default function PurchaseOrders() {
                   <td className="py-3 text-gray-500">{fmtDate(p.po_date)}</td>
                   <td className="py-3 text-gray-500">{p.quotation_no || '—'}</td>
                   <td className="py-3"><span className={`badge-status ${statusColors[p.status]}`}>{p.status.replace(/_/g, ' ')}</span></td>
+                  <td className="py-3"><ReceivedBadge po={p} /></td>
                   <td className="py-3">
                     <div className="flex items-center gap-2">
                       <button onClick={() => setViewPO(p.id)} className="text-blue-500 hover:text-blue-700" title="View / print"><FileText size={15} /></button>
+                      <button onClick={() => setReceiptsPO(p.id)} className="text-emerald-600 hover:text-emerald-800" title="Goods receipts"><Truck size={15} /></button>
                       {isAdmin() && (
                         <>
                           <button onClick={() => openEdit(p.id)} disabled={editLoadingId === p.id} className="text-gray-500 hover:text-gray-800" title="Edit"><Edit2 size={14} /></button>
@@ -349,7 +395,7 @@ export default function PurchaseOrders() {
                   </td>
                 </tr>
               ))}
-              {sorted.length === 0 && <tr><td colSpan={showCompany ? 7 : 6} className="py-8 text-center text-gray-400">{search ? 'No results found' : 'No purchase orders'}</td></tr>}
+              {sorted.length === 0 && <tr><td colSpan={showCompany ? 8 : 7} className="py-8 text-center text-gray-400">{search ? 'No results found' : 'No purchase orders'}</td></tr>}
             </tbody>
           </table>
           </div>
@@ -369,6 +415,7 @@ export default function PurchaseOrders() {
         />
       )}
       {viewPO && <PODocument poId={viewPO} onClose={() => setViewPO(null)} />}
+      {receiptsPO && <POReceiptsModal poId={receiptsPO} onClose={() => setReceiptsPO(null)} />}
     </div>
   )
 }
