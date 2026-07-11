@@ -116,6 +116,7 @@ export default function PIDocument({ piId, onClose }: { piId: number; onClose: (
                   <th className="border border-gray-400 p-2 text-left">Description</th>
                   <th className="border border-gray-400 p-2 text-center w-16">Qty (Pcs)</th>
                   <th className="border border-gray-400 p-2 text-center w-16">Qty ({qtyKgsLabel})</th>
+                  <th className="border border-gray-400 p-2 text-center w-20">Billed Qty</th>
                   <th className="border border-gray-400 p-2 text-center w-12">UOM</th>
                   <th className="border border-gray-400 p-2 text-right w-20">Rate ({cur})</th>
                   <th className="border border-gray-400 p-2 text-right w-24">Total ({cur})</th>
@@ -129,7 +130,8 @@ export default function PIDocument({ piId, onClose }: { piId: number; onClose: (
                     <td className="border border-gray-400 p-2">{item.description}</td>
                     <td className="border border-gray-400 p-2 text-center">{item.quantity_pcs || '—'}</td>
                     <td className="border border-gray-400 p-2 text-center">{item.quantity_kgs ? parseFloat(item.quantity_kgs).toFixed(3) : '—'}</td>
-                    <td className="border border-gray-400 p-2 text-center">{item.uom}</td>
+                    <td className="border border-gray-400 p-2 text-center">{item.billable_quantity ? parseFloat(item.billable_quantity).toLocaleString('en-IN', { maximumFractionDigits: 3 }) : '—'}</td>
+                    <td className="border border-gray-400 p-2 text-center">{item.billing_uom || item.uom}</td>
                     <td className="border border-gray-400 p-2 text-right">{parseFloat(item.rate).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
                     <td className="border border-gray-400 p-2 text-right">{parseFloat(item.total).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</td>
                   </tr>
@@ -138,6 +140,7 @@ export default function PIDocument({ piId, onClose }: { piId: number; onClose: (
                 {items.length < 6 && Array.from({ length: 6 - items.length }).map((_, i) => (
                   <tr key={`empty-${i}`}>
                     <td className="border border-gray-400 p-2">&nbsp;</td>
+                    <td className="border border-gray-400 p-2"></td>
                     <td className="border border-gray-400 p-2"></td>
                     <td className="border border-gray-400 p-2"></td>
                     <td className="border border-gray-400 p-2"></td>

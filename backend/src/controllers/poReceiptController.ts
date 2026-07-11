@@ -93,20 +93,24 @@ async function applyInventoryDelta(conn: any, brandId: number, poItemId: number,
   if (!sparePartId) return
 
   const [invRows] = await conn.execute(
-    'SELECT id, brand_id, current_stock FROM inventory_items WHERE id = ? AND is_active = 1',
+    'SELECT id, brand_id, uom, current_stock, current_stock_kgs FROM inventory_items WHERE id = ? AND is_active = 1',
     [sparePartId]
   ) as any[]
   if (!(invRows as any[]).length) return
   const inv = (invRows as any[])[0]
 
-  const stockBefore = parseFloat(inv.current_stock)
-  const stockAfter = stockBefore + delta
-  await conn.execute('UPDATE inventory_items SET current_stock = ? WHERE id = ?', [stockAfter, inv.id])
+  // Credit the dimension matching the item's unit: weight units -> kgs, everything else -> pcs.
+  const isKgs = inv.uom === 'kgs' || inv.uom === 'gms'
+  const beforePcs = parseFloat(inv.current_stock)
+  const beforeKgs = parseFloat(inv.current_stock_kgs)
+  const afterPcs = isKgs ? beforePcs : beforePcs + delta
+  const afterKgs = isKgs ? beforeKgs + delta : beforeKgs
+  await conn.execute('UPDATE inventory_items SET current_stock = ?, current_stock_kgs = ? WHERE id = ?', [afterPcs, afterKgs, inv.id])
   await conn.execute(
     `INSERT INTO inventory_transactions
-       (brand_id, inventory_item_id, transaction_type, quantity, reference_id, reference_type, notes, created_by, stock_before, stock_after)
-     VALUES (?,?,?,?,?,?,?,?,?,?)`,
-    [inv.brand_id, inv.id, 'purchase', delta, String(receiptId), 'po_receipt', `GRN receipt #${receiptId}`, userId, stockBefore, stockAfter]
+       (brand_id, inventory_item_id, transaction_type, quantity, quantity_kgs, reference_id, reference_type, notes, created_by, stock_before, stock_after, stock_before_kgs, stock_after_kgs)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [inv.brand_id, inv.id, 'purchase', isKgs ? 0 : delta, isKgs ? delta : 0, String(receiptId), 'po_receipt', `GRN receipt #${receiptId}`, userId, beforePcs, afterPcs, beforeKgs, afterKgs]
   )
 }
 

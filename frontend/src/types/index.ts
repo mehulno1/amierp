@@ -67,7 +67,8 @@ export interface ProductVariant {
   uom: string
   client_rate?: number
   mrp_rate?: number
-  weight_kg?: number
+  weight_kg?: number              // weight per piece (kg)
+  length_per_piece_mtr?: number   // length per piece (mtr)
 }
 
 export type InventoryType = 'finished_goods' | 'raw_material' | 'spare_parts' | 'packing_material'
@@ -80,10 +81,16 @@ export interface InventoryItem {
   item_name: string
   uom: string
   current_stock: number
+  current_stock_kgs: number
   reserved_stock: number
+  reserved_kgs: number
   available_stock?: number
   minimum_stock?: number
+  minimum_stock_kgs?: number
   maximum_stock?: number
+  maximum_stock_kgs?: number
+  length_per_piece_mtr?: number
+  weight_per_piece_kgs?: number
   stockpoint_name?: string
 }
 
@@ -121,6 +128,8 @@ export interface OrderItem {
   quantity_pcs: number
   quantity_kgs: number
   uom: string
+  billable_quantity?: number
+  billing_uom?: string
   rate: number
   total: number
   delivered_pcs: number

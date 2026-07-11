@@ -25,6 +25,7 @@ import purchaseOrderRoutes from './routes/purchaseOrders'
 import enquiryRoutes from './routes/enquiries'
 import offerRoutes from './routes/offers'
 import proformaInvoiceRoutes from './routes/proformaInvoices'
+import reportRoutes from './routes/reports'
 import { sendRequisitionReminders } from './utils/reminderCron'
 
 const app = express()
@@ -58,6 +59,7 @@ app.use('/api/purchase-orders', purchaseOrderRoutes)
 app.use('/api/enquiries', enquiryRoutes)
 app.use('/api/offers', offerRoutes)
 app.use('/api/proforma-invoices', proformaInvoiceRoutes)
+app.use('/api/reports', reportRoutes)
 
 // Daily reminder cron at 8 AM
 cron.schedule('0 8 * * *', () => {

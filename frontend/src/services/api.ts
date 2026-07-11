@@ -152,6 +152,23 @@ export const dashboardApi = {
   getQuotationStats: () => api.get('/dashboard/quotation-stats'),
 }
 
+// Reports — each returns { success, data }. `params` carries from/to/days where relevant.
+export const reportsApi = {
+  openPurchaseOrders: () => api.get('/reports/open-purchase-orders'),
+  procurementSpend: (params?: any) => api.get('/reports/procurement-spend', { params }),
+  vendorPerformance: () => api.get('/reports/vendor-performance'),
+  requisitionSla: () => api.get('/reports/requisition-sla'),
+  reorder: () => api.get('/reports/reorder'),
+  inventoryValuation: () => api.get('/reports/inventory-valuation'),
+  stockMovement: (params?: any) => api.get('/reports/stock-movement', { params }),
+  fulfillment: () => api.get('/reports/fulfillment'),
+  salesRegister: (params?: any) => api.get('/reports/sales-register', { params }),
+  dispatchRegister: (params?: any) => api.get('/reports/dispatch-register', { params }),
+  receivables: () => api.get('/reports/receivables'),
+  salesFunnel: (params?: any) => api.get('/reports/sales-funnel', { params }),
+  expiringOffers: (params?: any) => api.get('/reports/expiring-offers', { params }),
+}
+
 // Admin
 export const adminApi = {
   listBrands: () => api.get('/admin/brands'),

@@ -75,7 +75,8 @@ export interface ProductVariant {
   uom: string
   client_rate?: number
   mrp_rate?: number
-  weight_kg?: number
+  weight_kg?: number              // weight per piece (kg)
+  length_per_piece_mtr?: number   // length per piece (mtr)
   is_active: boolean
 }
 
@@ -91,10 +92,16 @@ export interface InventoryItem {
   item_name: string
   uom: InventoryUnit
   current_stock: number
+  current_stock_kgs: number
   reserved_stock: number
+  reserved_kgs: number
   available_stock: number
   minimum_stock?: number
+  minimum_stock_kgs?: number
   maximum_stock?: number
+  maximum_stock_kgs?: number
+  length_per_piece_mtr?: number
+  weight_per_piece_kgs?: number
   is_active: boolean
   created_at: string
 }

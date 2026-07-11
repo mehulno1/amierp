@@ -6,17 +6,30 @@ export async function getInventoryByType(req: AuthRequest, res: Response) {
   try {
     const { type } = req.params
     const ids = req.brandId ? [req.brandId] : req.userBrandIds!
+    // Inventory is tracked on two dimensions: pcs (current_stock / reserved_stock)
+    // and weight (current_stock_kgs / reserved_kgs). For finished goods linked to a
+    // product variant, reserved is computed live from open orders — pcs from
+    // quantity_pcs and kgs from quantity_kgs, independently.
     const items = await executeQuery(
       `SELECT i.*, s.name as stockpoint_name, b.name as brand_name,
         CASE WHEN i.product_variant_id IS NOT NULL THEN
           COALESCE((
-            SELECT SUM(CASE WHEN oi.uom IN ('kgs','gms','mt') THEN oi.quantity_kgs ELSE oi.quantity_pcs END)
+            SELECT SUM(oi.quantity_pcs)
             FROM order_items oi
             JOIN new_orders o ON oi.order_id = o.id
             WHERE oi.product_variant_id = i.product_variant_id
               AND o.status IN ('new_order','processing','ready_for_dispatch')
           ), 0)
-        ELSE i.reserved_stock END as reserved_stock
+        ELSE i.reserved_stock END as reserved_stock,
+        CASE WHEN i.product_variant_id IS NOT NULL THEN
+          COALESCE((
+            SELECT SUM(oi.quantity_kgs)
+            FROM order_items oi
+            JOIN new_orders o ON oi.order_id = o.id
+            WHERE oi.product_variant_id = i.product_variant_id
+              AND o.status IN ('new_order','processing','ready_for_dispatch')
+          ), 0)
+        ELSE i.reserved_kgs END as reserved_kgs
        FROM inventory_items i
        LEFT JOIN stockpoints s ON i.stockpoint_id = s.id
        JOIN brands b ON i.brand_id = b.id
@@ -29,7 +42,9 @@ export async function getInventoryByType(req: AuthRequest, res: Response) {
 
 export async function createInventoryItem(req: AuthRequest, res: Response) {
   try {
-    const { brand_id, item_type, item_code, item_name, uom, current_stock, minimum_stock, maximum_stock, stockpoint_id } = req.body
+    const { brand_id, item_type, item_code, item_name, uom, current_stock, current_stock_pcs, current_stock_kgs,
+            minimum_stock, minimum_stock_kgs, maximum_stock, maximum_stock_kgs, stockpoint_id,
+            length_per_piece_mtr, weight_per_piece_kgs } = req.body
     const effectiveBrandId = Number(brand_id || req.brandId)
     if (!effectiveBrandId || !req.userBrandIds!.includes(effectiveBrandId)) {
       return res.status(400).json({ success: false, error: 'Valid company required' })
@@ -40,21 +55,37 @@ export async function createInventoryItem(req: AuthRequest, res: Response) {
     // mysql2 rejects `undefined` parameters with "Bind parameters must not contain undefined".
     // Inventory's AddItemModal omits some columns entirely (no max-stock field at all), so
     // we coerce every nullable column here rather than relying on each caller to do it.
-    const opening = current_stock !== undefined && current_stock !== '' ? parseFloat(current_stock) || 0 : 0
-    const minStock = minimum_stock !== undefined && minimum_stock !== '' ? parseFloat(minimum_stock) : null
-    const maxStock = maximum_stock !== undefined && maximum_stock !== '' ? parseFloat(maximum_stock) : null
+    // Inventory is dual-unit: pcs columns + kgs columns. `current_stock_pcs` falls back to
+    // the legacy `current_stock` field for older callers.
+    const num = (v: any) => (v !== undefined && v !== null && v !== '' ? parseFloat(v) || 0 : 0)
+    const nullNum = (v: any) => (v !== undefined && v !== null && v !== '' ? parseFloat(v) : null)
+    const openingPcs = num(current_stock_pcs !== undefined ? current_stock_pcs : current_stock)
+    const openingKgs = num(current_stock_kgs)
+    const minStock = nullNum(minimum_stock)
+    const minStockKgs = nullNum(minimum_stock_kgs)
+    const maxStock = nullNum(maximum_stock)
+    const maxStockKgs = nullNum(maximum_stock_kgs)
     const code = item_code != null && item_code !== '' ? item_code : null
     const stockpoint = stockpoint_id != null && stockpoint_id !== '' ? parseInt(stockpoint_id) : null
 
     const result = await executeQuery<any>(
-      'INSERT INTO inventory_items (brand_id, stockpoint_id, item_type, item_code, item_name, uom, current_stock, minimum_stock, maximum_stock) VALUES (?,?,?,?,?,?,?,?,?)',
-      [effectiveBrandId, stockpoint, item_type, code, item_name, uom || 'pcs', opening, minStock, maxStock]
+      `INSERT INTO inventory_items
+        (brand_id, stockpoint_id, item_type, item_code, item_name, uom,
+         current_stock, current_stock_kgs, minimum_stock, minimum_stock_kgs, maximum_stock, maximum_stock_kgs,
+         length_per_piece_mtr, weight_per_piece_kgs)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      [effectiveBrandId, stockpoint, item_type, code, item_name, uom || 'pcs',
+       openingPcs, openingKgs, minStock, minStockKgs, maxStock, maxStockKgs,
+       nullNum(length_per_piece_mtr), nullNum(weight_per_piece_kgs)]
     )
     const itemId = (result as any).insertId
-    if (opening > 0) {
+    if (openingPcs > 0 || openingKgs > 0) {
       await executeQuery(
-        'INSERT INTO inventory_transactions (brand_id, inventory_item_id, transaction_type, quantity, notes, created_by, stock_before, stock_after) VALUES (?,?,?,?,?,?,?,?)',
-        [effectiveBrandId, itemId, 'opening_stock', opening, 'Initial stock', req.user!.id, 0, opening]
+        `INSERT INTO inventory_transactions
+          (brand_id, inventory_item_id, transaction_type, quantity, quantity_kgs, notes, created_by,
+           stock_before, stock_after, stock_before_kgs, stock_after_kgs)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        [effectiveBrandId, itemId, 'opening_stock', openingPcs, openingKgs, 'Initial stock', req.user!.id, 0, openingPcs, 0, openingKgs]
       )
     }
     const item = await executeQuery('SELECT * FROM inventory_items WHERE id = ?', [itemId])
@@ -65,32 +96,49 @@ export async function createInventoryItem(req: AuthRequest, res: Response) {
 export async function adjustInventory(req: AuthRequest, res: Response) {
   try {
     const { id } = req.params
-    const { adjustment_type, quantity, notes } = req.body
+    // Dual-unit adjustment: caller may supply quantity_pcs and/or quantity_kgs.
+    // `quantity` is kept as a legacy alias for the pcs amount.
+    const { adjustment_type, quantity, quantity_pcs, quantity_kgs, notes } = req.body
     const ids = req.brandId ? [req.brandId] : req.userBrandIds!
     const items = await executeQuery<any>(`SELECT * FROM inventory_items WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`, [id, ...ids])
     if (!items.length) return res.status(404).json({ success: false, error: 'Item not found' })
 
     const item = items[0]
-    const stockBefore = parseFloat(item.current_stock)
-    let newStock = stockBefore
+    const qtyPcs = parseFloat(quantity_pcs !== undefined ? quantity_pcs : quantity) || 0
+    const qtyKgs = parseFloat(quantity_kgs) || 0
+    if (qtyPcs <= 0 && qtyKgs <= 0) {
+      return res.status(400).json({ success: false, error: 'Enter a pcs and/or kgs quantity' })
+    }
+
+    const beforePcs = parseFloat(item.current_stock)
+    const beforeKgs = parseFloat(item.current_stock_kgs)
+    let newPcs = beforePcs
+    let newKgs = beforeKgs
     let txType: string
 
     if (adjustment_type === 'add') {
-      newStock += parseFloat(quantity)
+      newPcs += qtyPcs
+      newKgs += qtyKgs
       txType = 'manual_add'
     } else if (adjustment_type === 'subtract') {
-      newStock -= parseFloat(quantity)
-      if (newStock < 0) return res.status(400).json({ success: false, error: 'Insufficient stock' })
+      newPcs -= qtyPcs
+      newKgs -= qtyKgs
+      if (newPcs < 0 || newKgs < 0) return res.status(400).json({ success: false, error: 'Insufficient stock' })
       txType = 'manual_deduct'
     } else {
-      newStock = parseFloat(quantity)
+      // 'set' only overwrites a dimension the caller actually provided a value for.
+      if (quantity_pcs !== undefined || quantity !== undefined) newPcs = qtyPcs
+      if (quantity_kgs !== undefined) newKgs = qtyKgs
       txType = 'adjustment'
     }
 
-    await executeQuery('UPDATE inventory_items SET current_stock = ? WHERE id = ?', [newStock, id])
+    await executeQuery('UPDATE inventory_items SET current_stock = ?, current_stock_kgs = ? WHERE id = ?', [newPcs, newKgs, id])
     await executeQuery(
-      'INSERT INTO inventory_transactions (brand_id, inventory_item_id, transaction_type, quantity, notes, created_by, stock_before, stock_after) VALUES (?,?,?,?,?,?,?,?)',
-      [item.brand_id, id, txType, quantity, notes, req.user!.id, stockBefore, newStock]
+      `INSERT INTO inventory_transactions
+        (brand_id, inventory_item_id, transaction_type, quantity, quantity_kgs, notes, created_by,
+         stock_before, stock_after, stock_before_kgs, stock_after_kgs)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+      [item.brand_id, id, txType, qtyPcs, qtyKgs, notes ?? null, req.user!.id, beforePcs, newPcs, beforeKgs, newKgs]
     )
     res.json({ success: true, message: 'Inventory adjusted' })
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
@@ -99,11 +147,13 @@ export async function adjustInventory(req: AuthRequest, res: Response) {
 export async function updateStockLevels(req: AuthRequest, res: Response) {
   try {
     const { id } = req.params
-    const { minimum_stock, maximum_stock } = req.body
+    const { minimum_stock, maximum_stock, minimum_stock_kgs, maximum_stock_kgs } = req.body
+    const lvl = (v: any) => (v !== undefined && v !== null && v !== '' ? parseFloat(v) : null)
     const ids = req.brandId ? [req.brandId] : req.userBrandIds!
     await executeQuery(
-      `UPDATE inventory_items SET minimum_stock=?, maximum_stock=? WHERE id=? AND brand_id IN (${ids.map(() => '?').join(',')})`,
-      [minimum_stock || null, maximum_stock || null, id, ...ids]
+      `UPDATE inventory_items SET minimum_stock=?, maximum_stock=?, minimum_stock_kgs=?, maximum_stock_kgs=?
+       WHERE id=? AND brand_id IN (${ids.map(() => '?').join(',')})`,
+      [lvl(minimum_stock), lvl(maximum_stock), lvl(minimum_stock_kgs), lvl(maximum_stock_kgs), id, ...ids]
     )
     res.json({ success: true, message: 'Stock levels updated' })
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
@@ -115,7 +165,7 @@ export async function getTransactionHistory(req: AuthRequest, res: Response) {
     const txns = await executeQuery(
       `SELECT t.*, u.name as created_by_name FROM inventory_transactions t
        LEFT JOIN new_users u ON t.created_by = u.id
-       WHERE t.inventory_item_id = ? ORDER BY t.created_at DESC LIMIT 200`,
+       WHERE t.inventory_item_id = ? ORDER BY t.created_at DESC, t.id DESC LIMIT 200`,
       [id]
     )
     res.json({ success: true, data: txns })
@@ -125,7 +175,8 @@ export async function getTransactionHistory(req: AuthRequest, res: Response) {
 export async function updateInventoryItem(req: AuthRequest, res: Response) {
   try {
     const { id } = req.params
-    const { item_name, item_code, uom } = req.body
+    const { item_name, item_code, uom, length_per_piece_mtr, weight_per_piece_kgs } = req.body
+    const nn = (v: any) => (v !== undefined && v !== null && v !== '' ? parseFloat(v) : null)
     const ids = req.brandId ? [req.brandId] : req.userBrandIds!
     if (!item_name) return res.status(400).json({ success: false, error: 'Item name is required' })
     const items = await executeQuery<any>(
@@ -134,8 +185,10 @@ export async function updateInventoryItem(req: AuthRequest, res: Response) {
     )
     if (!items.length) return res.status(404).json({ success: false, error: 'Item not found' })
     await executeQuery(
-      'UPDATE inventory_items SET item_name = ?, item_code = ?, uom = ? WHERE id = ?',
-      [item_name, item_code || null, uom || items[0].uom, id]
+      'UPDATE inventory_items SET item_name = ?, item_code = ?, uom = ?, length_per_piece_mtr = ?, weight_per_piece_kgs = ? WHERE id = ?',
+      [item_name, item_code || null, uom || items[0].uom,
+       length_per_piece_mtr !== undefined ? nn(length_per_piece_mtr) : items[0].length_per_piece_mtr,
+       weight_per_piece_kgs !== undefined ? nn(weight_per_piece_kgs) : items[0].weight_per_piece_kgs, id]
     )
     const updated = await executeQuery('SELECT * FROM inventory_items WHERE id = ?', [id])
     res.json({ success: true, data: updated[0] })

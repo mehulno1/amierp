@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
 import { useAuth } from '../hooks/useAuth'
 import {
@@ -6,12 +7,14 @@ import {
   ChevronDown,
 } from 'lucide-react'
 import Wordmark from './ui/Wordmark'
+import { reportsForRole } from '../pages/reports/registry'
 
 type NavRole = 'super_admin' | 'admin' | 'requisition_admin' | 'quotation_admin' | 'user' | 'accounts'
 
 type NavEntry =
   | { type: 'link'; label: string; icon: typeof LayoutDashboard; path: string; roles: NavRole[] }
   | { type: 'group'; label: string; roles: NavRole[] }
+  | { type: 'reports'; label: string; roles: NavRole[] }
 
 const NAV: NavEntry[] = [
   { type: 'link', label: 'Dashboard', icon: LayoutDashboard, path: '/dashboard', roles: ['super_admin','admin','requisition_admin','quotation_admin','user','accounts'] },
@@ -28,8 +31,7 @@ const NAV: NavEntry[] = [
   { type: 'group', label: 'Inventory', roles: ['super_admin','admin','requisition_admin'] },
   { type: 'link', label: 'Inventory', icon: Warehouse, path: '/inventory', roles: ['super_admin','admin','requisition_admin'] },
   { type: 'link', label: 'Products', icon: Package, path: '/products', roles: ['super_admin','admin'] },
-  { type: 'group', label: 'Reports', roles: ['super_admin','admin','accounts'] },
-  { type: 'link', label: 'Reports', icon: BarChart3, path: '/reports', roles: ['super_admin','admin','accounts'] },
+  { type: 'reports', label: 'Reports', roles: ['super_admin','admin','accounts','requisition_admin'] },
   { type: 'group', label: 'Admin', roles: ['super_admin', 'admin'] },
   { type: 'link', label: 'System Admin', icon: Settings, path: '/admin', roles: ['super_admin', 'admin'] },
 ]
@@ -43,6 +45,8 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
   const { pathname } = useLocation()
   const { user, brands } = useAuth()
   const role = (user?.role ?? 'user') as NavRole
+  const [reportsOpen, setReportsOpen] = useState(pathname.startsWith('/reports'))
+  const reportLinks = reportsForRole(role)
   const activeBrand = brands[0]
   const initials = user?.name
     ? user.name.split(/\s+/).slice(0, 2).map(s => s[0]).join('').toUpperCase()
@@ -119,6 +123,68 @@ export default function Sidebar({ isOpen, onClose }: SidebarProps) {
                 >
                   {item.label}
                 </span>
+              </div>
+            )
+          }
+
+          if (item.type === 'reports') {
+            if (reportLinks.length === 0) return null
+            const sectionActive = pathname === '/reports'
+            return (
+              <div key={`reports-${idx}`} className="pt-4">
+                {/* Group header — toggles the report list, with a shortcut to the hub */}
+                <div className="flex items-center justify-between px-3.5 pb-1">
+                  <NavLink
+                    to="/reports"
+                    onClick={onClose}
+                    className="flex items-center gap-2 uppercase"
+                    style={{
+                      fontFamily: 'var(--font-mono)', fontSize: 10, letterSpacing: '.18em',
+                      color: sectionActive ? 'var(--color-warm)' : 'var(--mute)', textDecoration: 'none',
+                    }}
+                  >
+                    <BarChart3 size={12} /> {item.label}
+                  </NavLink>
+                  <button
+                    type="button"
+                    onClick={() => setReportsOpen(o => !o)}
+                    aria-label={reportsOpen ? 'Collapse reports' : 'Expand reports'}
+                    style={{ color: 'var(--mute)' }}
+                  >
+                    <ChevronDown
+                      size={13}
+                      style={{ transform: reportsOpen ? 'none' : 'rotate(-90deg)', transition: 'transform .15s' }}
+                    />
+                  </button>
+                </div>
+                {reportsOpen && (
+                  <div className="flex flex-col">
+                    {reportLinks.map((r) => {
+                      const to = `/reports/${r.slug}`
+                      const active = pathname === to
+                      const Icon = r.icon
+                      return (
+                        <NavLink
+                          key={r.slug}
+                          to={to}
+                          onClick={onClose}
+                          className="flex items-center gap-2.5 py-1.5 transition-colors duration-150"
+                          style={{
+                            fontFamily: 'var(--font-sans)', fontSize: 12.5,
+                            paddingLeft: 18, paddingRight: 14, textDecoration: 'none',
+                            background: active ? 'var(--color-warm)' : 'transparent',
+                            color: active ? 'var(--color-ink)' : 'var(--mute)',
+                            borderLeft: `3px solid ${active ? 'var(--color-warm-dk)' : 'transparent'}`,
+                            marginLeft: active ? -3 : 0,
+                          }}
+                        >
+                          <Icon size={13} style={{ opacity: active ? 1 : 0.7 }} />
+                          {r.title}
+                        </NavLink>
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             )
           }

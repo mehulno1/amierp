@@ -31,11 +31,44 @@ function fmtQty(val: any) {
 
 type StockState = 'low' | 'out' | 'ok'
 
-function getStockState(item: InventoryItem & { reserved_stock: number }): StockState {
-  const avail = Number(item.current_stock) - Number(item.reserved_stock)
+// Inventory is tracked on two dimensions: pieces (pcs) and weight (kgs).
+type DualItem = InventoryItem & { reserved_stock: number; reserved_kgs: number }
+
+function availPair(item: DualItem) {
+  return {
+    pcs: Number(item.current_stock) - Number(item.reserved_stock || 0),
+    kgs: Number(item.current_stock_kgs || 0) - Number(item.reserved_kgs || 0),
+  }
+}
+
+// State of a single dimension. 'na' means the dimension isn't used for this item
+// (no stock and no minimum set), so it doesn't influence the overall status.
+function dimState(avail: number, min: any): 'out' | 'low' | 'ok' | 'na' {
+  const m = min != null && min !== '' ? Number(min) : null
+  if (m == null && avail === 0) return 'na'
   if (avail <= 0) return 'out'
-  if (item.minimum_stock && avail < Number(item.minimum_stock)) return 'low'
+  if (m != null && avail < m) return 'low'
   return 'ok'
+}
+
+function getStockState(item: DualItem): StockState {
+  const a = availPair(item)
+  const active = [dimState(a.pcs, item.minimum_stock), dimState(a.kgs, item.minimum_stock_kgs)].filter(s => s !== 'na')
+  if (!active.length) return 'out'
+  if (active.includes('out')) return 'out'
+  if (active.includes('low')) return 'low'
+  return 'ok'
+}
+
+// Renders a value on both dimensions, stacked: "<pcs> pcs" over "<kgs> kgs".
+function Dual({ pcs, kgs, color, big }: { pcs: any; kgs: any; color?: string; big?: boolean }) {
+  const unit = (u: string) => <span style={{ color: 'var(--mute-lt)', fontSize: 10, marginLeft: 3 }}>{u}</span>
+  return (
+    <div style={{ fontFamily: big ? 'var(--font-serif)' : 'var(--font-mono)', fontSize: big ? 15 : 12, lineHeight: 1.45, color }}>
+      <div>{fmtQty(pcs)}{unit('pcs')}</div>
+      <div>{fmtQty(kgs)}{unit('kgs')}</div>
+    </div>
+  )
 }
 
 const TX_TYPES: Record<string, { label: string; cls: string }> = {
@@ -59,7 +92,9 @@ function AddItemModal({ activeType, onClose, onSuccess }: { activeType: Inventor
     defaultValues: {
       brand_id: defaultBrandId,
       item_type: activeType,
-      item_name: '', item_code: '', uom: 'pcs', current_stock: 0, minimum_stock: '',
+      item_name: '', item_code: '', uom: 'pcs',
+      current_stock_pcs: 0, current_stock_kgs: 0, minimum_stock: '', minimum_stock_kgs: '',
+      length_per_piece_mtr: '', weight_per_piece_kgs: '',
     }
   })
 
@@ -70,7 +105,8 @@ function AddItemModal({ activeType, onClose, onSuccess }: { activeType: Inventor
       await inventoryApi.create({
         ...data,
         brand_id: parseInt(data.brand_id),
-        current_stock: parseFloat(data.current_stock) || 0,
+        current_stock_pcs: parseFloat(data.current_stock_pcs) || 0,
+        current_stock_kgs: parseFloat(data.current_stock_kgs) || 0,
       })
       toast.success('Item added')
       onSuccess()
@@ -109,18 +145,37 @@ function AddItemModal({ activeType, onClose, onSuccess }: { activeType: Inventor
               <input className="input-field" placeholder="e.g. STL-12" {...register('item_code')} />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">UOM *</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">UOM (for docs/PI) *</label>
               <select className="input-field" {...register('uom')}>
                 {UOM_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
               </select>
             </div>
+          </div>
+          <p className="text-xs text-gray-400 -mt-1">Stock is tracked in both pieces and weight (kgs).</p>
+          <div className="grid grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Opening Stock</label>
-              <input type="number" step="0.001" min="0" className="input-field" {...register('current_stock')} />
+              <label className="block text-sm font-medium text-gray-700 mb-1">Opening Stock (pcs)</label>
+              <input type="number" step="0.001" min="0" className="input-field" {...register('current_stock_pcs')} />
             </div>
             <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">Min Stock Alert</label>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Opening Stock (kgs)</label>
+              <input type="number" step="0.001" min="0" className="input-field" {...register('current_stock_kgs')} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Min Alert (pcs)</label>
               <input type="number" step="0.001" min="0" className="input-field" placeholder="Optional" {...register('minimum_stock')} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Min Alert (kgs)</label>
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="Optional" {...register('minimum_stock_kgs')} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Length / piece (mtr)</label>
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="Optional" {...register('length_per_piece_mtr')} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Weight / piece (kgs)</label>
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="Optional" {...register('weight_per_piece_kgs')} />
             </div>
           </div>
           <div className="flex gap-3 pt-1">
@@ -136,7 +191,10 @@ function AddItemModal({ activeType, onClose, onSuccess }: { activeType: Inventor
 function EditItemModal({ item, onClose, onSuccess }: { item: InventoryItem; onClose: () => void; onSuccess: () => void }) {
   const [loading, setLoading] = useState(false)
   const { register, handleSubmit } = useForm({
-    defaultValues: { item_name: item.item_name, item_code: item.item_code || '', uom: item.uom }
+    defaultValues: {
+      item_name: item.item_name, item_code: item.item_code || '', uom: item.uom,
+      length_per_piece_mtr: item.length_per_piece_mtr ?? '', weight_per_piece_kgs: item.weight_per_piece_kgs ?? '',
+    }
   })
 
   const onSubmit = async (data: any) => {
@@ -172,6 +230,14 @@ function EditItemModal({ item, onClose, onSuccess }: { item: InventoryItem; onCl
                 {UOM_OPTIONS.map(u => <option key={u} value={u}>{u}</option>)}
               </select>
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Length / piece (mtr)</label>
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="Optional" {...register('length_per_piece_mtr')} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Weight / piece (kgs)</label>
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="Optional" {...register('weight_per_piece_kgs')} />
+            </div>
           </div>
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose} className="btn-secondary flex-1">Cancel</button>
@@ -185,12 +251,15 @@ function EditItemModal({ item, onClose, onSuccess }: { item: InventoryItem; onCl
 
 function AdjustModal({ item, onClose, onSuccess }: { item: InventoryItem; onClose: () => void; onSuccess: () => void }) {
   const [loading, setLoading] = useState(false)
-  const { register, handleSubmit } = useForm({ defaultValues: { adjustment_type: 'add', quantity: '', notes: '' } })
+  const { register, handleSubmit } = useForm({ defaultValues: { adjustment_type: 'add', quantity_pcs: '', quantity_kgs: '', notes: '' } })
 
   const onSubmit = async (data: any) => {
+    const pcs = parseFloat(data.quantity_pcs) || 0
+    const kgs = parseFloat(data.quantity_kgs) || 0
+    if (pcs <= 0 && kgs <= 0) { toast.error('Enter a pcs and/or kgs quantity'); return }
     setLoading(true)
     try {
-      await inventoryApi.adjust(item.id, { ...data, quantity: parseFloat(data.quantity) })
+      await inventoryApi.adjust(item.id, { adjustment_type: data.adjustment_type, notes: data.notes, quantity_pcs: pcs, quantity_kgs: kgs })
       toast.success('Stock updated')
       onSuccess()
     } catch (err: any) { toast.error(err.response?.data?.error || 'Failed') }
@@ -203,7 +272,7 @@ function AdjustModal({ item, onClose, onSuccess }: { item: InventoryItem; onClos
         <div className="flex items-center justify-between p-5 border-b">
           <div>
             <h2 className="text-base font-semibold text-gray-900">Adjust Stock</h2>
-            <p className="text-xs text-gray-500 mt-0.5">{item.item_name} · Current: <strong>{fmtQty(item.current_stock)} {item.uom}</strong></p>
+            <p className="text-xs text-gray-500 mt-0.5">{item.item_name} · Current: <strong>{fmtQty(item.current_stock)} pcs / {fmtQty(item.current_stock_kgs)} kgs</strong></p>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">&times;</button>
         </div>
@@ -216,10 +285,17 @@ function AdjustModal({ item, onClose, onSuccess }: { item: InventoryItem; onClos
               <option value="set">Set to Value</option>
             </select>
           </div>
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Quantity ({item.uom}) *</label>
-            <input type="number" step="0.001" min="0" className="input-field" {...register('quantity', { required: true })} />
+          <div className="grid grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Quantity (pcs)</label>
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="0" {...register('quantity_pcs')} />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Quantity (kgs)</label>
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="0" {...register('quantity_kgs')} />
+            </div>
           </div>
+          <p className="text-xs text-gray-400 -mt-2">Leave a field blank/0 to leave that dimension unchanged.</p>
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">Notes</label>
             <input className="input-field" placeholder="Reason for adjustment..." {...register('notes')} />
@@ -237,7 +313,10 @@ function AdjustModal({ item, onClose, onSuccess }: { item: InventoryItem; onClos
 function UpdateLevelsModal({ item, onClose, onSuccess }: { item: InventoryItem; onClose: () => void; onSuccess: () => void }) {
   const [loading, setLoading] = useState(false)
   const { register, handleSubmit } = useForm({
-    defaultValues: { minimum_stock: item.minimum_stock || '', maximum_stock: item.maximum_stock || '' }
+    defaultValues: {
+      minimum_stock: item.minimum_stock || '', maximum_stock: item.maximum_stock || '',
+      minimum_stock_kgs: item.minimum_stock_kgs || '', maximum_stock_kgs: item.maximum_stock_kgs || '',
+    }
   })
 
   const onSubmit = async (data: any) => {
@@ -259,18 +338,23 @@ function UpdateLevelsModal({ item, onClose, onSuccess }: { item: InventoryItem; 
         </div>
         <div className="bg-gray-50 mx-5 mt-5 rounded-lg p-3">
           <p className="font-medium text-gray-900 text-sm">{item.item_name}</p>
-          <p className="text-xs text-gray-500 mt-0.5">Current Stock: <strong>{fmtQty(item.current_stock)} {item.uom}</strong></p>
+          <p className="text-xs text-gray-500 mt-0.5">Current Stock: <strong>{fmtQty(item.current_stock)} pcs / {fmtQty(item.current_stock_kgs)} kgs</strong></p>
         </div>
         <form onSubmit={handleSubmit(onSubmit)} className="p-5 space-y-4">
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Minimum Stock ({item.uom})</label>
-            <input type="number" step="0.001" min="0" className="input-field" placeholder="0" {...register('minimum_stock')} />
-            <p className="text-xs text-gray-400 mt-1">Alert when stock falls below this level</p>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Pieces (pcs)</label>
+            <div className="grid grid-cols-2 gap-4">
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="Min" {...register('minimum_stock')} />
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="Max (optional)" {...register('maximum_stock')} />
+            </div>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700 mb-1">Maximum Stock ({item.uom}) <span className="text-gray-400">(Optional)</span></label>
-            <input type="number" step="0.001" min="0" className="input-field" placeholder="Leave empty for no limit" {...register('maximum_stock')} />
-            <p className="text-xs text-gray-400 mt-1">Alert when stock exceeds this level (leave empty for no limit)</p>
+            <label className="block text-sm font-medium text-gray-700 mb-2">Weight (kgs)</label>
+            <div className="grid grid-cols-2 gap-4">
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="Min" {...register('minimum_stock_kgs')} />
+              <input type="number" step="0.001" min="0" className="input-field" placeholder="Max (optional)" {...register('maximum_stock_kgs')} />
+            </div>
+            <p className="text-xs text-gray-400 mt-1">Low-stock alerts trigger when available falls below a minimum.</p>
           </div>
           <div className="flex gap-3 pt-1">
             <button type="button" onClick={onClose} className="btn-secondary flex-1">Cancel</button>
@@ -318,7 +402,23 @@ function TransactionHistoryModal({ item, onClose }: { item: InventoryItem; onClo
                 {(txns as any[]).map((t: any) => {
                   const txInfo = TX_TYPES[t.transaction_type] || { label: t.transaction_type, cls: 'bg-gray-100 text-gray-700' }
                   const isNeg = ['manual_deduct', 'dispatch', 'reserved'].includes(t.transaction_type)
-                  const qty = parseFloat(t.quantity)
+                  const sign = isNeg ? '-' : '+'
+                  const qtyPcs = parseFloat(t.quantity) || 0
+                  const qtyKgs = parseFloat(t.quantity_kgs) || 0
+                  // Stacked pcs/kgs cell; a dimension line is hidden when it carries no value.
+                  const stacked = (pcs: any, kgs: any, opts: { signed?: boolean } = {}) => {
+                    const np = pcs != null ? parseFloat(pcs) : null
+                    const nk = kgs != null ? parseFloat(kgs) : null
+                    const showP = np != null && (!opts.signed || np !== 0)
+                    const showK = nk != null && (!opts.signed || nk !== 0)
+                    if (!showP && !showK) return <span className="text-gray-400">—</span>
+                    return (
+                      <div className="leading-tight">
+                        {showP && <div>{opts.signed ? sign : ''}{fmtQty(np)} <span className="text-gray-400 text-[10px]">pcs</span></div>}
+                        {showK && <div>{opts.signed ? sign : ''}{fmtQty(nk)} <span className="text-gray-400 text-[10px]">kgs</span></div>}
+                      </div>
+                    )
+                  }
                   return (
                     <tr key={t.id} className="hover:bg-gray-50">
                       <td className="py-3 text-gray-600 whitespace-nowrap">{new Date(t.created_at).toLocaleString('en-IN')}</td>
@@ -326,10 +426,10 @@ function TransactionHistoryModal({ item, onClose }: { item: InventoryItem; onClo
                         <span className={`badge-status ${txInfo.cls}`}>{txInfo.label}</span>
                       </td>
                       <td className={`py-3 font-medium ${isNeg ? 'text-red-600' : 'text-green-600'}`}>
-                        {isNeg ? '-' : '+'}{fmtQty(qty)}
+                        {stacked(qtyPcs, qtyKgs, { signed: true })}
                       </td>
-                      <td className="py-3 text-gray-600">{t.stock_before != null ? fmtQty(t.stock_before) : '—'}</td>
-                      <td className="py-3 text-gray-600">{t.stock_after != null ? fmtQty(t.stock_after) : '—'}</td>
+                      <td className="py-3 text-gray-600">{stacked(t.stock_before, t.stock_before_kgs)}</td>
+                      <td className="py-3 text-gray-600">{stacked(t.stock_after, t.stock_after_kgs)}</td>
                       <td className="py-3 text-gray-500 max-w-[200px] truncate">{t.notes || '—'}</td>
                       <td className="py-3 text-gray-500">{t.created_by_name || '—'}</td>
                     </tr>
@@ -364,14 +464,11 @@ export default function Inventory() {
     queryFn: () => inventoryApi.getByType(activeType).then(r => r.data.data),
   })
 
-  const allItems = items as (InventoryItem & { reserved_stock: number })[]
+  const allItems = items as DualItem[]
 
   const stats = useMemo(() => {
-    const low = allItems.filter(i => {
-      const avail = Number(i.current_stock) - Number(i.reserved_stock)
-      return avail > 0 && i.minimum_stock && avail < Number(i.minimum_stock)
-    }).length
-    const out = allItems.filter(i => Number(i.current_stock) - Number(i.reserved_stock) <= 0).length
+    const low = allItems.filter(i => getStockState(i) === 'low').length
+    const out = allItems.filter(i => getStockState(i) === 'out').length
     return { total: allItems.length, low, out }
   }, [allItems])
 
@@ -379,11 +476,11 @@ export default function Inventory() {
     const s = search.toLowerCase()
     return allItems.filter(i => {
       const matchSearch = !s || i.item_name.toLowerCase().includes(s) || (i.item_code || '').toLowerCase().includes(s)
-      const avail = Number(i.current_stock) - Number(i.reserved_stock)
+      const state = getStockState(i)
       const matchFilter =
         stockFilter === 'all' ||
-        (stockFilter === 'low' && avail > 0 && i.minimum_stock && avail < Number(i.minimum_stock)) ||
-        (stockFilter === 'out' && avail <= 0)
+        (stockFilter === 'low' && state === 'low') ||
+        (stockFilter === 'out' && state === 'out')
       return matchSearch && matchFilter
     })
   }, [allItems, search, stockFilter])
@@ -394,9 +491,12 @@ export default function Inventory() {
   const exportExcel = () => {
     const ws = XLSX.utils.json_to_sheet(sorted.map(i => ({
       Code: i.item_code, Name: i.item_name, UOM: i.uom,
-      'Current Stock': i.current_stock, 'Reserved': i.reserved_stock,
-      'Available': Number(i.current_stock) - Number(i.reserved_stock),
-      'Min Stock': i.minimum_stock, 'Max Stock': i.maximum_stock,
+      'On Hand (pcs)': Number(i.current_stock), 'On Hand (kgs)': Number(i.current_stock_kgs || 0),
+      'Reserved (pcs)': Number(i.reserved_stock || 0), 'Reserved (kgs)': Number(i.reserved_kgs || 0),
+      'Available (pcs)': Number(i.current_stock) - Number(i.reserved_stock || 0),
+      'Available (kgs)': Number(i.current_stock_kgs || 0) - Number(i.reserved_kgs || 0),
+      'Min (pcs)': i.minimum_stock, 'Max (pcs)': i.maximum_stock,
+      'Min (kgs)': i.minimum_stock_kgs, 'Max (kgs)': i.maximum_stock_kgs,
       'Last Updated': fmtDate((i as any).updated_at),
     })))
     const wb = XLSX.utils.book_new()
@@ -414,12 +514,18 @@ export default function Inventory() {
     qc.invalidateQueries({ queryKey: ['inventory', activeType] })
   }
 
-  const stockLevel = (i: InventoryItem & { reserved_stock: number }) => {
-    const min = Number(i.minimum_stock || 0)
-    const max = Number(i.maximum_stock || 0)
-    const cur = Number(i.current_stock)
-    const ref = max > 0 ? max : Math.max(min * 2, 1)
-    return Math.max(0, Math.min(100, (cur / ref) * 100))
+  // Fill % for the bar — driven by the most-constrained dimension that's actually in use.
+  const stockLevel = (i: DualItem) => {
+    const calc = (cur: any, min: any, max: any) => {
+      const mx = Number(max || 0)
+      const mn = Number(min || 0)
+      const ref = mx > 0 ? mx : Math.max(mn * 2, 1)
+      return Math.max(0, Math.min(100, (Number(cur) / ref) * 100))
+    }
+    const vals: number[] = []
+    if (Number(i.current_stock) > 0 || i.minimum_stock != null) vals.push(calc(i.current_stock, i.minimum_stock, i.maximum_stock))
+    if (Number(i.current_stock_kgs) > 0 || i.minimum_stock_kgs != null) vals.push(calc(i.current_stock_kgs, i.minimum_stock_kgs, i.maximum_stock_kgs))
+    return vals.length ? Math.min(...vals) : 0
   }
 
   return (
@@ -601,8 +707,8 @@ export default function Inventory() {
               </thead>
               <tbody>
                 {sorted.map((i: any) => {
-                  const reserved = Number(i.reserved_stock)
-                  const avail = Number(i.current_stock) - reserved
+                  const a = availPair(i)
+                  const hasReserved = Number(i.reserved_stock) > 0 || Number(i.reserved_kgs) > 0
                   const state = getStockState(i)
                   const pct = stockLevel(i)
                   const barColor =
@@ -631,41 +737,29 @@ export default function Inventory() {
                             {i.item_code}
                           </div>
                         )}
+                        {(i.length_per_piece_mtr || i.weight_per_piece_kgs) && (
+                          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 10, color: 'var(--mute-lt)', marginTop: 2 }}>
+                            {i.length_per_piece_mtr ? `${fmtQty(i.length_per_piece_mtr)} mtr/pc` : ''}
+                            {i.length_per_piece_mtr && i.weight_per_piece_kgs ? ' · ' : ''}
+                            {i.weight_per_piece_kgs ? `${fmtQty(i.weight_per_piece_kgs)} kg/pc` : ''}
+                          </div>
+                        )}
                       </td>
                       <td style={{ padding: '14px 16px' }}>
-                        <span
-                          style={{
-                            fontFamily: 'var(--font-serif)',
-                            fontSize: 16,
-                            fontWeight: 400,
-                          }}
-                        >
-                          {fmtQty(i.current_stock)}
-                        </span>
-                        <span style={{ fontSize: 11, color: 'var(--mute-lt)', marginLeft: 4 }}>
-                          {i.uom}
-                        </span>
+                        <Dual pcs={i.current_stock} kgs={i.current_stock_kgs} big />
                       </td>
-                      <td
-                        style={{
-                          padding: '14px 16px',
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 12,
-                          color: reserved > 0 ? 'var(--color-warm-dk)' : 'var(--mute-lt)',
-                        }}
-                      >
-                        {fmtQty(reserved)}
+                      <td style={{ padding: '14px 16px' }}>
+                        <Dual pcs={i.reserved_stock} kgs={i.reserved_kgs} color={hasReserved ? 'var(--color-warm-dk)' : 'var(--mute-lt)'} />
                       </td>
-                      <td
-                        style={{
-                          padding: '14px 16px',
-                          fontFamily: 'var(--font-mono)',
-                          fontSize: 12,
-                          fontWeight: 600,
-                          color: avail > 0 ? 'var(--color-success)' : 'var(--color-danger)',
-                        }}
-                      >
-                        {fmtQty(avail)} {i.uom}
+                      <td style={{ padding: '14px 16px' }}>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600, lineHeight: 1.45 }}>
+                          <div style={{ color: a.pcs > 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                            {fmtQty(a.pcs)}<span style={{ color: 'var(--mute-lt)', fontSize: 10, marginLeft: 3, fontWeight: 400 }}>pcs</span>
+                          </div>
+                          <div style={{ color: a.kgs > 0 ? 'var(--color-success)' : 'var(--color-danger)' }}>
+                            {fmtQty(a.kgs)}<span style={{ color: 'var(--mute-lt)', fontSize: 10, marginLeft: 3, fontWeight: 400 }}>kgs</span>
+                          </div>
+                        </div>
                       </td>
                       <td
                         style={{
@@ -675,8 +769,8 @@ export default function Inventory() {
                           color: 'var(--mute-lt)',
                         }}
                       >
-                        <div>Min: {i.minimum_stock ? fmtQty(i.minimum_stock) : '—'}</div>
-                        <div>Max: {i.maximum_stock ? fmtQty(i.maximum_stock) : 'N/A'}</div>
+                        <div>pcs: {i.minimum_stock ? fmtQty(i.minimum_stock) : '—'} / {i.maximum_stock ? fmtQty(i.maximum_stock) : 'N/A'}</div>
+                        <div>kgs: {i.minimum_stock_kgs ? fmtQty(i.minimum_stock_kgs) : '—'} / {i.maximum_stock_kgs ? fmtQty(i.maximum_stock_kgs) : 'N/A'}</div>
                       </td>
                       <td style={{ padding: '14px 16px', minWidth: 120 }}>
                         <div style={{ height: 6, background: 'var(--color-paper-alt)', position: 'relative' }}>

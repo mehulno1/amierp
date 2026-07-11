@@ -86,10 +86,11 @@ function VariantModal({ productId, variant, onClose, onSuccess }: { productId: n
                 <option value="nos">Nos</option><option value="mt">MT</option><option value="set">Set</option>
               </select>
             </div>
-            <div><label className="block text-sm font-medium text-gray-700 mb-1">Client Rate</label><input type="number" step="0.01" className="input-field" {...register('client_rate')} /></div>
-            <div><label className="block text-sm font-medium text-gray-700 mb-1">MRP Rate</label><input type="number" step="0.01" className="input-field" {...register('mrp_rate')} /></div>
-            <div><label className="block text-sm font-medium text-gray-700 mb-1">Weight (Kg)</label><input type="number" step="0.001" className="input-field" {...register('weight_kg')} /></div>
+            <div><label className="block text-sm font-medium text-gray-700 mb-1">Rate</label><input type="number" step="0.01" className="input-field" {...register('client_rate')} /></div>
+            <div><label className="block text-sm font-medium text-gray-700 mb-1">Length / piece (Mtr)</label><input type="number" step="0.001" className="input-field" {...register('length_per_piece_mtr')} /></div>
+            <div><label className="block text-sm font-medium text-gray-700 mb-1">Weight / piece (Kg)</label><input type="number" step="0.001" className="input-field" {...register('weight_kg')} /></div>
           </div>
+          <p className="text-xs text-gray-400">Rate is per the selected UOM. Per-piece length &amp; weight drive the pcs/kgs conversion on orders.</p>
           <div className="flex justify-end gap-3">
             <button type="button" onClick={onClose} className="btn-secondary">Cancel</button>
             <button type="submit" disabled={loading} className="btn-primary">{loading ? 'Saving...' : 'Save'}</button>
@@ -145,7 +146,7 @@ export default function Products() {
                     ) : (
                       <table className="w-full text-sm">
                         <thead><tr className="text-left text-gray-500 text-xs">
-                          <th className="pb-1">Variant</th><th className="pb-1">UOM</th><th className="pb-1">Client Rate</th><th className="pb-1">MRP Rate</th><th className="pb-1">Weight (kg)</th><th className="pb-1">Actions</th>
+                          <th className="pb-1">Variant</th><th className="pb-1">UOM</th><th className="pb-1">Rate</th><th className="pb-1">Length/pc (mtr)</th><th className="pb-1">Weight/pc (kg)</th><th className="pb-1">Actions</th>
                         </tr></thead>
                         <tbody className="divide-y divide-gray-50">
                           {(p.variants || []).map(v => (
@@ -153,7 +154,7 @@ export default function Products() {
                               <td className="py-1.5">{v.variant_name}</td>
                               <td className="py-1.5 text-gray-500">{v.uom}</td>
                               <td className="py-1.5">{v.client_rate ? `₹${v.client_rate}` : '—'}</td>
-                              <td className="py-1.5">{v.mrp_rate ? `₹${v.mrp_rate}` : '—'}</td>
+                              <td className="py-1.5">{(v as any).length_per_piece_mtr || '—'}</td>
                               <td className="py-1.5">{v.weight_kg || '—'}</td>
                               <td className="py-1.5">
                                 <button onClick={() => setVariantModal({ open: true, productId: p.id, variant: v })} className="text-blue-500 hover:text-blue-700 mr-2"><Edit2 size={13} /></button>

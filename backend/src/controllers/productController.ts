@@ -4,20 +4,32 @@ import { AuthRequest } from '../types'
 
 const UOM_MAP: Record<string, string> = { mt: 'kgs', mtr: 'mtr', pcs: 'pcs', kgs: 'kgs', nos: 'nos', set: 'set', gms: 'gms', ltr: 'ltr', ml: 'ml' }
 
-async function syncVariantToInventory(brandId: number, itemCode: string | null, itemName: string, variantName: string, uom: string, variantId?: number) {
+// Coerce '', undefined and null to a real null (mysql2 rejects undefined params).
+const numOrNull = (v: any) => (v !== undefined && v !== null && v !== '' ? parseFloat(v) : null)
+
+async function syncVariantToInventory(
+  brandId: number, itemCode: string | null, itemName: string, variantName: string, uom: string,
+  variantId?: number, lengthMtr?: any, weightKgs?: any
+) {
   const inventoryName = `${itemName} - ${variantName}`
   const mappedUom = UOM_MAP[uom] || 'pcs'
+  const len = numOrNull(lengthMtr)
+  const wt = numOrNull(weightKgs)
   const existing = await executeQuery<any>(
     `SELECT id FROM inventory_items WHERE (product_variant_id=? OR (brand_id=? AND item_name=?)) AND item_type='finished_goods' AND is_active=1`,
     [variantId || 0, brandId, inventoryName]
   )
   if (!existing.length) {
     await executeQuery(
-      'INSERT INTO inventory_items (brand_id, product_variant_id, item_type, item_code, item_name, uom, current_stock) VALUES (?,?,?,?,?,?,?)',
-      [brandId, variantId || null, 'finished_goods', itemCode || null, inventoryName, mappedUom, 0]
+      'INSERT INTO inventory_items (brand_id, product_variant_id, item_type, item_code, item_name, uom, current_stock, length_per_piece_mtr, weight_per_piece_kgs) VALUES (?,?,?,?,?,?,?,?,?)',
+      [brandId, variantId || null, 'finished_goods', itemCode || null, inventoryName, mappedUom, 0, len, wt]
     )
-  } else if (variantId && !existing[0].product_variant_id) {
-    await executeQuery('UPDATE inventory_items SET product_variant_id=? WHERE id=?', [variantId, existing[0].id])
+  } else {
+    // Keep the finished-goods row linked and its per-piece conversion factors in sync.
+    await executeQuery(
+      'UPDATE inventory_items SET product_variant_id=COALESCE(product_variant_id,?), length_per_piece_mtr=?, weight_per_piece_kgs=? WHERE id=?',
+      [variantId || null, len, wt, existing[0].id]
+    )
   }
 }
 
@@ -42,19 +54,21 @@ export async function createProduct(req: AuthRequest, res: Response) {
     if (!effectiveBrandId || !req.userBrandIds!.includes(effectiveBrandId)) {
       return res.status(400).json({ success: false, error: 'Valid company required' })
     }
+    // Coerce optional text columns to null — mysql2 rejects undefined bind params.
     const result = await executeQuery<any>(
       'INSERT INTO new_products (brand_id, item_code, item_name, category, description) VALUES (?,?,?,?,?)',
-      [effectiveBrandId, item_code, item_name, category, description]
+      [effectiveBrandId, item_code ?? null, item_name, category ?? null, description ?? null]
     )
     const productId = (result as any).insertId
     if (variants?.length) {
       for (const v of variants) {
+        // Single price lives in client_rate; mrp_rate is retained in the schema but unused.
         await executeQuery(
-          'INSERT INTO product_variants (product_id, variant_name, uom, client_rate, mrp_rate, weight_kg) VALUES (?,?,?,?,?,?)',
-          [productId, v.variant_name, v.uom || 'pcs', v.client_rate, v.mrp_rate, v.weight_kg]
+          'INSERT INTO product_variants (product_id, variant_name, uom, client_rate, mrp_rate, weight_kg, length_per_piece_mtr) VALUES (?,?,?,?,?,?,?)',
+          [productId, v.variant_name, v.uom || 'pcs', numOrNull(v.client_rate), null, numOrNull(v.weight_kg), numOrNull(v.length_per_piece_mtr)]
         )
         const vRes = await executeQuery<any>('SELECT id FROM product_variants WHERE product_id=? AND variant_name=? ORDER BY id DESC LIMIT 1', [productId, v.variant_name])
-        await syncVariantToInventory(effectiveBrandId, item_code, item_name, v.variant_name, v.uom || 'pcs', vRes[0]?.id)
+        await syncVariantToInventory(effectiveBrandId, item_code, item_name, v.variant_name, v.uom || 'pcs', vRes[0]?.id, v.length_per_piece_mtr, v.weight_kg)
       }
     }
     const product = await executeQuery('SELECT * FROM new_products WHERE id = ?', [productId])
@@ -70,7 +84,7 @@ export async function updateProduct(req: AuthRequest, res: Response) {
     const ids = req.userBrandIds!
     await executeQuery(
       `UPDATE new_products SET item_code=?, item_name=?, category=?, description=? WHERE id=? AND brand_id IN (${ids.map(() => '?').join(',')})`,
-      [item_code, item_name, category, description, id, ...ids]
+      [item_code ?? null, item_name, category ?? null, description ?? null, id, ...ids]
     )
     res.json({ success: true, message: 'Product updated' })
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
@@ -87,17 +101,17 @@ export async function deleteProduct(req: AuthRequest, res: Response) {
 export async function createVariant(req: AuthRequest, res: Response) {
   try {
     const { product_id } = req.params
-    const { variant_name, uom, client_rate, mrp_rate, weight_kg } = req.body
+    const { variant_name, uom, client_rate, weight_kg, length_per_piece_mtr } = req.body
     const result = await executeQuery<any>(
-      'INSERT INTO product_variants (product_id, variant_name, uom, client_rate, mrp_rate, weight_kg) VALUES (?,?,?,?,?,?)',
-      [product_id, variant_name, uom || 'pcs', client_rate, mrp_rate, weight_kg]
+      'INSERT INTO product_variants (product_id, variant_name, uom, client_rate, mrp_rate, weight_kg, length_per_piece_mtr) VALUES (?,?,?,?,?,?,?)',
+      [product_id, variant_name, uom || 'pcs', numOrNull(client_rate), null, numOrNull(weight_kg), numOrNull(length_per_piece_mtr)]
     )
     const variant = await executeQuery('SELECT * FROM product_variants WHERE id = ?', [(result as any).insertId])
 
     const products = await executeQuery<any>('SELECT * FROM new_products WHERE id = ?', [product_id])
     if (products.length) {
       const p = products[0]
-      await syncVariantToInventory(p.brand_id, p.item_code, p.item_name, variant_name, uom || 'pcs', (result as any).insertId)
+      await syncVariantToInventory(p.brand_id, p.item_code, p.item_name, variant_name, uom || 'pcs', (result as any).insertId, length_per_piece_mtr, weight_kg)
     }
 
     res.status(201).json({ success: true, data: variant[0] })
@@ -107,12 +121,18 @@ export async function createVariant(req: AuthRequest, res: Response) {
 export async function updateVariant(req: AuthRequest, res: Response) {
   try {
     const { variant_id } = req.params
-    const { variant_name, uom, client_rate, mrp_rate, weight_kg } = req.body
+    const { variant_name, uom, client_rate, weight_kg, length_per_piece_mtr } = req.body
     await executeQuery(
-      'UPDATE product_variants SET variant_name=?, uom=?, client_rate=?, mrp_rate=?, weight_kg=? WHERE id=?',
-      [variant_name, uom, client_rate, mrp_rate, weight_kg, variant_id]
+      'UPDATE product_variants SET variant_name=?, uom=?, client_rate=?, weight_kg=?, length_per_piece_mtr=? WHERE id=?',
+      [variant_name, uom, numOrNull(client_rate), numOrNull(weight_kg), numOrNull(length_per_piece_mtr), variant_id]
     )
-    const variant = await executeQuery('SELECT * FROM product_variants WHERE id = ?', [variant_id])
+    const variant = await executeQuery<any>('SELECT * FROM product_variants WHERE id = ?', [variant_id])
+    // Refresh the linked finished-goods inventory row's per-piece conversion factors.
+    const products = await executeQuery<any>('SELECT * FROM new_products WHERE id = ?', [variant[0]?.product_id])
+    if (products.length) {
+      const p = products[0]
+      await syncVariantToInventory(p.brand_id, p.item_code, p.item_name, variant_name, uom || 'pcs', Number(variant_id), length_per_piece_mtr, weight_kg)
+    }
     res.json({ success: true, data: variant[0] })
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
 }

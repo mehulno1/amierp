@@ -4,6 +4,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ordersApi, brandsApi } from '../services/api'
 import { X, Plus, Trash2 } from 'lucide-react'
 import type { Client, Product, ProductVariant, Brand } from '../types'
+import { deriveOrderLine, lineTotal, defaultOrderUom } from '../utils/orderConversion'
 import toast from 'react-hot-toast'
 
 interface Props {
@@ -28,24 +29,35 @@ interface ItemRowProps {
 function OrderItemRow({ index, control, register, setValue, remove, showRemove, brandFilteredProducts, currency }: ItemRowProps) {
   const [selectedProductId, setSelectedProductId] = useState<number | null>(null)
   const [selectedVariantId, setSelectedVariantId] = useState<string>('')
+  // Per-piece factors + rate basis for the selected variant, used to convert.
+  const [variantUom, setVariantUom] = useState<string>('mtr')
+  const [len, setLen] = useState<number>(0)
+  const [wt, setWt] = useState<number>(0)
 
   const variants: ProductVariant[] = selectedProductId
     ? (brandFilteredProducts.find(p => p.id === selectedProductId)?.variants || [])
     : []
 
-  const watchQtyPcs = useWatch({ control, name: `items.${index}.quantity_pcs` })
-  const watchQtyKgs = useWatch({ control, name: `items.${index}.quantity_kgs` })
+  const watchQty = useWatch({ control, name: `items.${index}.qty` })
+  const watchOrderUom = useWatch({ control, name: `items.${index}.uom` })
+  const watchBillable = useWatch({ control, name: `items.${index}.billable_quantity` })
   const watchRate = useWatch({ control, name: `items.${index}.rate` })
-  const watchUom = useWatch({ control, name: `items.${index}.uom` })
 
+  // A) Entered Qty + UOM derive the physical pcs & weight (editable) and the billable qty.
+  // Billing follows the entered Qty (no rounding loss when entry unit = rate unit).
   useEffect(() => {
-    const uom = (watchUom || '').toLowerCase()
-    const qty = uom === 'kgs' || uom === 'mt'
-      ? parseFloat(watchQtyKgs) || 0
-      : parseInt(watchQtyPcs) || 0
-    const rate = parseFloat(watchRate) || 0
-    setValue(`items.${index}.total`, parseFloat((qty * rate).toFixed(2)))
-  }, [watchQtyPcs, watchQtyKgs, watchRate, watchUom])
+    if (!selectedVariantId) return
+    const { pcs, weight, billable, billing_uom } = deriveOrderLine(parseFloat(watchQty) || 0, watchOrderUom, variantUom, len, wt)
+    setValue(`items.${index}.quantity_pcs`, pcs)
+    setValue(`items.${index}.quantity_kgs`, weight)
+    setValue(`items.${index}.billable_quantity`, billable)
+    setValue(`items.${index}.billing_uom`, billing_uom)
+  }, [watchQty, watchOrderUom, selectedVariantId, variantUom, len, wt])
+
+  // B) Total = rate x billable. Re-runs when the rate or the billable qty changes.
+  useEffect(() => {
+    setValue(`items.${index}.total`, lineTotal(parseFloat(watchBillable) || 0, parseFloat(watchRate) || 0))
+  }, [watchBillable, watchRate])
 
   const handleProductChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
     const pid = parseInt(e.target.value) || null
@@ -54,6 +66,9 @@ function OrderItemRow({ index, control, register, setValue, remove, showRemove, 
     setValue(`items.${index}.product_variant_id`, '')
     setValue(`items.${index}.description`, '')
     setValue(`items.${index}.rate`, 0)
+    setValue(`items.${index}.qty`, 0)
+    setValue(`items.${index}.quantity_pcs`, 0)
+    setValue(`items.${index}.quantity_kgs`, 0)
     setValue(`items.${index}.total`, 0)
   }
 
@@ -65,11 +80,16 @@ function OrderItemRow({ index, control, register, setValue, remove, showRemove, 
     const variant = variants.find(v => v.id === parseInt(variantId))
     if (variant) {
       const product = brandFilteredProducts.find(p => p.id === selectedProductId)
+      setVariantUom(variant.uom || 'mtr')
+      setLen(Number(variant.length_per_piece_mtr) || 0)
+      setWt(Number(variant.weight_kg) || 0)
       setValue(`items.${index}.description`, `${product?.item_name} — ${variant.variant_name}`)
-      setValue(`items.${index}.uom`, variant.uom || 'mtr')
+      setValue(`items.${index}.uom`, defaultOrderUom(variant.uom || 'mtr'))
       setValue(`items.${index}.rate`, variant.client_rate ?? 0)
     }
   }
+
+  const rateBasis = variantUom ? `per ${variantUom}` : ''
 
   return (
     <div className="border border-gray-200 rounded-lg p-4 space-y-3">
@@ -103,28 +123,29 @@ function OrderItemRow({ index, control, register, setValue, remove, showRemove, 
         </div>
       </div>
 
-      <div className="grid grid-cols-5 gap-3">
+      <div className="grid grid-cols-6 gap-3">
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Qty (Pcs)</label>
-          <input type="number" min="0" className="input-field" {...register(`items.${index}.quantity_pcs`)} />
-        </div>
-        <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Qty (Kgs)</label>
-          <input type="number" min="0" step="0.001" className="input-field" {...register(`items.${index}.quantity_kgs`)} />
+          <label className="block text-xs font-medium text-gray-600 mb-1">Qty</label>
+          <input type="number" min="0" step="0.001" className="input-field" {...register(`items.${index}.qty`)} />
         </div>
         <div>
           <label className="block text-xs font-medium text-gray-600 mb-1">UOM</label>
           <select className="input-field" {...register(`items.${index}.uom`)}>
             <option value="mtr">Mtr</option>
-            <option value="pcs">Pcs</option>
             <option value="kgs">Kgs</option>
-            <option value="nos">Nos</option>
-            <option value="mt">MT</option>
-            <option value="set">Set</option>
+            <option value="pcs">Pcs</option>
           </select>
         </div>
         <div>
-          <label className="block text-xs font-medium text-gray-600 mb-1">Rate ({currency})</label>
+          <label className="block text-xs font-medium text-gray-600 mb-1">No. of Pcs</label>
+          <input type="number" min="0" className="input-field" {...register(`items.${index}.quantity_pcs`)} />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Weight (Kgs)</label>
+          <input type="number" min="0" step="0.001" className="input-field" {...register(`items.${index}.quantity_kgs`)} />
+        </div>
+        <div>
+          <label className="block text-xs font-medium text-gray-600 mb-1">Rate ({currency}) <span className="text-gray-400">{rateBasis}</span></label>
           <input type="number" min="0" step="0.01" className="input-field" {...register(`items.${index}.rate`)} />
         </div>
         <div>
@@ -132,6 +153,7 @@ function OrderItemRow({ index, control, register, setValue, remove, showRemove, 
           <input type="number" readOnly className="input-field bg-gray-50 cursor-default" {...register(`items.${index}.total`)} />
         </div>
       </div>
+      <p className="text-xs text-gray-400">Pcs &amp; weight auto-fill from Qty + UOM using the variant's per-piece length/weight; both stay editable.</p>
 
       {showRemove && (
         <button type="button" onClick={remove} className="text-red-500 hover:text-red-700 text-xs flex items-center gap-1">
@@ -161,7 +183,7 @@ export default function CreateOrderModal({ brands, clients, products, onClose, o
       po_no: '',
       po_date: '',
       notes: '',
-      items: [{ product_variant_id: '', description: '', quantity_pcs: 0, quantity_kgs: 0, uom: 'mtr', rate: 0, total: 0 }]
+      items: [{ product_variant_id: '', description: '', qty: 0, quantity_pcs: 0, quantity_kgs: 0, uom: 'mtr', billable_quantity: 0, billing_uom: '', rate: 0, total: 0 }]
     }
   })
 
@@ -194,6 +216,8 @@ export default function CreateOrderModal({ brands, clients, products, onClose, o
         product_variant_id: item.product_variant_id ? parseInt(item.product_variant_id) : null,
         quantity_pcs: parseInt(item.quantity_pcs) || 0,
         quantity_kgs: parseFloat(item.quantity_kgs) || 0,
+        billable_quantity: parseFloat(item.billable_quantity) || 0,
+        billing_uom: item.billing_uom || item.uom || null,
         rate: parseFloat(item.rate) || 0,
         total: parseFloat(item.total) || 0,
       }))
@@ -293,7 +317,7 @@ export default function CreateOrderModal({ brands, clients, products, onClose, o
               <h3 className="font-medium text-gray-900">Order Items</h3>
               <button
                 type="button"
-                onClick={() => append({ product_variant_id: '', description: '', quantity_pcs: 0, quantity_kgs: 0, uom: 'mtr', rate: 0, total: 0 })}
+                onClick={() => append({ product_variant_id: '', description: '', qty: 0, quantity_pcs: 0, quantity_kgs: 0, uom: 'mtr', billable_quantity: 0, billing_uom: '', rate: 0, total: 0 })}
                 className="btn-secondary py-1 flex items-center gap-1"
               >
                 <Plus size={14} /> Add Item

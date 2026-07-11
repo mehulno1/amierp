@@ -12,7 +12,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
     <header
       className="flex items-center justify-between gap-4 px-6 py-3"
       style={{
-        background: '#fff',
+        background: 'var(--color-paper)',
         borderBottom: '1px solid var(--rule-lt)',
         minHeight: 56,
         fontFamily: 'var(--font-sans)',
@@ -32,7 +32,8 @@ export default function Header({ onMenuClick }: HeaderProps) {
         <div
           className="hidden sm:flex items-center gap-2.5 w-full max-w-sm px-3 py-2"
           style={{
-            background: 'var(--color-paper-alt)',
+            background: '#fff',
+            border: '1px solid var(--rule-lt)',
             color: 'var(--mute-lt)',
             fontSize: 13,
           }}
@@ -44,7 +45,7 @@ export default function Header({ onMenuClick }: HeaderProps) {
           <span
             className="px-1.5 py-0.5"
             style={{
-              background: '#fff',
+              background: 'var(--color-paper-alt)',
               border: '1px solid var(--rule-lt-md)',
               fontFamily: 'var(--font-mono)',
               fontSize: 10,

@@ -18,6 +18,7 @@ import PurchaseOrders from './pages/PurchaseOrders'
 import Quotations from './pages/Quotations'
 import ProformaInvoices from './pages/ProformaInvoices'
 import Reports from './pages/Reports'
+import ReportRouter from './pages/reports/ReportRouter'
 import Profile from './pages/Profile'
 import Admin from './pages/Admin'
 
@@ -58,7 +59,8 @@ function AppRoutes() {
       <Route path="/purchase-orders" element={<PrivateRoute roles={['super_admin','admin','requisition_admin']}><PurchaseOrders /></PrivateRoute>} />
       <Route path="/quotations" element={<PrivateRoute roles={['super_admin','admin','quotation_admin']}><Quotations /></PrivateRoute>} />
       <Route path="/proforma-invoices" element={<PrivateRoute roles={['super_admin','admin','accounts']}><ProformaInvoices /></PrivateRoute>} />
-      <Route path="/reports" element={<PrivateRoute roles={['super_admin','admin','accounts']}><Reports /></PrivateRoute>} />
+      <Route path="/reports" element={<PrivateRoute roles={['super_admin','admin','accounts','requisition_admin']}><Reports /></PrivateRoute>} />
+      <Route path="/reports/:slug" element={<PrivateRoute roles={['super_admin','admin','accounts','requisition_admin']}><ReportRouter /></PrivateRoute>} />
       <Route path="/profile" element={<PrivateRoute><Profile /></PrivateRoute>} />
       <Route path="/admin" element={<PrivateRoute roles={['super_admin','admin']}><Admin /></PrivateRoute>} />
       <Route path="/" element={<Navigate to="/dashboard" replace />} />

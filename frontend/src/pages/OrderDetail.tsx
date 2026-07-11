@@ -1,9 +1,10 @@
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { ordersApi, piApi, clientsApi } from '../services/api'
+import { ordersApi, piApi, clientsApi, productsApi } from '../services/api'
 import { ArrowLeft, FileText, Pencil, X, Check, Trash2, Plus, Truck } from 'lucide-react'
 import { useAuth } from '../hooks/useAuth'
 import { useState } from 'react'
+import { deriveOrderLine, lineTotal, billingUomFor } from '../utils/orderConversion'
 import toast from 'react-hot-toast'
 import LoadingSpinner from '../components/LoadingSpinner'
 import PIDocument from '../components/PIDocument'
@@ -447,28 +448,57 @@ function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, deliveri
   const [rows, setRows] = useState<any[]>([])
   const [saving, setSaving] = useState(false)
 
+  // Products give us each variant's per-piece factors + rate basis for conversion.
+  const { data: products = [] } = useQuery({
+    queryKey: ['products'],
+    queryFn: () => productsApi.list().then(r => r.data.data),
+    enabled: editing,
+  })
+  const variantById: Record<number, any> = {}
+  for (const p of (products as any[])) for (const v of (p.variants || [])) variantById[v.id] = v
+
   const startEdit = () => {
     setRows((order.items || []).map((item: any) => ({
+      product_variant_id: item.product_variant_id ?? null,
       description: item.description || item.product_name || '',
+      qty: '',
       quantity_pcs: item.quantity_pcs ?? 0,
       quantity_kgs: item.quantity_kgs ?? 0,
       uom: item.uom || 'mtr',
+      billable_quantity: item.billable_quantity ?? 0,
+      billing_uom: item.billing_uom || item.uom || 'mtr',
       rate: item.rate ?? 0,
       total: item.total ?? 0,
     })))
     setEditing(true)
   }
 
+  // Total = rate x billable. For manual rows (no variant) the billable follows the entered
+  // UOM from pcs/weight; for variant rows the billable is set from Qty+UOM in updateRow.
+  const recompute = (r: any) => {
+    const rate = parseFloat(r.rate) || 0
+    if (!r.product_variant_id || !variantById[parseInt(r.product_variant_id)]) {
+      const u = (r.uom || '').toLowerCase()
+      r.billable_quantity = (u === 'kgs' || u === 'mt') ? (parseFloat(r.quantity_kgs) || 0) : (parseFloat(r.quantity_pcs) || 0)
+      r.billing_uom = billingUomFor(r.uom)
+    }
+    r.total = lineTotal(parseFloat(r.billable_quantity) || 0, rate)
+  }
+
   const updateRow = (idx: number, field: string, value: any) => {
     setRows(prev => {
       const next = [...prev]
-      next[idx] = { ...next[idx], [field]: value }
-      if (field === 'quantity_pcs' || field === 'quantity_kgs' || field === 'rate' || field === 'uom') {
-        const r = next[idx]
-        const uom = (r.uom || '').toLowerCase()
-        const qty = uom === 'kgs' || uom === 'mt' ? parseFloat(r.quantity_kgs) || 0 : parseInt(r.quantity_pcs) || 0
-        next[idx].total = parseFloat((qty * (parseFloat(r.rate) || 0)).toFixed(2))
+      const r = { ...next[idx], [field]: value }
+      // Entering Qty + UOM re-derives pcs/weight + billable from the variant's per-piece factors.
+      if ((field === 'qty' || field === 'uom') && r.product_variant_id) {
+        const v = variantById[parseInt(r.product_variant_id)]
+        if (v) {
+          const d = deriveOrderLine(parseFloat(r.qty) || 0, r.uom, v.uom, Number(v.length_per_piece_mtr) || 0, Number(v.weight_kg) || 0)
+          r.quantity_pcs = d.pcs; r.quantity_kgs = d.weight; r.billable_quantity = d.billable; r.billing_uom = d.billing_uom
+        }
       }
+      if (['qty', 'uom', 'quantity_pcs', 'quantity_kgs', 'rate'].includes(field)) recompute(r)
+      next[idx] = r
       return next
     })
   }
@@ -490,31 +520,35 @@ function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, deliveri
         <div className="flex items-center justify-between mb-4">
           <h3 className="font-medium text-gray-900">Order Items</h3>
           <div className="flex gap-2">
-            <button type="button" onClick={() => setRows(r => [...r, { description: '', quantity_pcs: 0, quantity_kgs: 0, uom: 'mtr', rate: 0, total: 0 }])} className="btn-secondary py-1 text-xs flex items-center gap-1"><Plus size={12} />Add Row</button>
+            <button type="button" onClick={() => setRows(r => [...r, { product_variant_id: null, description: '', qty: '', quantity_pcs: 0, quantity_kgs: 0, uom: 'mtr', billable_quantity: 0, billing_uom: 'mtr', rate: 0, total: 0 }])} className="btn-secondary py-1 text-xs flex items-center gap-1"><Plus size={12} />Add Row</button>
             <button onClick={() => setEditing(false)} className="text-gray-400 hover:text-gray-600"><X size={16} /></button>
           </div>
         </div>
         <div className="space-y-3">
           {rows.map((row, idx) => (
             <div key={idx} className="border border-gray-100 rounded-lg p-3">
-              <div className="grid grid-cols-6 gap-2 text-sm">
+              <div className="grid grid-cols-7 gap-2 text-sm">
                 <div className="col-span-2">
                   <label className="block text-xs text-gray-500 mb-1">Description</label>
                   <input className="input-field text-xs" value={row.description} onChange={e => updateRow(idx, 'description', e.target.value)} />
                 </div>
                 <div>
-                  <label className="block text-xs text-gray-500 mb-1">Qty (Pcs)</label>
-                  <input type="number" min="0" className="input-field text-xs" value={row.quantity_pcs} onChange={e => updateRow(idx, 'quantity_pcs', e.target.value)} />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Qty (Kgs)</label>
-                  <input type="number" min="0" step="0.001" className="input-field text-xs" value={row.quantity_kgs} onChange={e => updateRow(idx, 'quantity_kgs', e.target.value)} />
+                  <label className="block text-xs text-gray-500 mb-1">Qty</label>
+                  <input type="number" min="0" step="0.001" className="input-field text-xs" value={row.qty} placeholder="convert" onChange={e => updateRow(idx, 'qty', e.target.value)} />
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">UOM</label>
                   <select className="input-field text-xs" value={row.uom} onChange={e => updateRow(idx, 'uom', e.target.value)}>
-                    <option value="mtr">Mtr</option><option value="pcs">Pcs</option><option value="kgs">Kgs</option><option value="nos">Nos</option><option value="mt">MT</option><option value="set">Set</option>
+                    <option value="mtr">Mtr</option><option value="kgs">Kgs</option><option value="pcs">Pcs</option>
                   </select>
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">No. of Pcs</label>
+                  <input type="number" min="0" className="input-field text-xs" value={row.quantity_pcs} onChange={e => updateRow(idx, 'quantity_pcs', e.target.value)} />
+                </div>
+                <div>
+                  <label className="block text-xs text-gray-500 mb-1">Weight (Kgs)</label>
+                  <input type="number" min="0" step="0.001" className="input-field text-xs" value={row.quantity_kgs} onChange={e => updateRow(idx, 'quantity_kgs', e.target.value)} />
                 </div>
                 <div>
                   <label className="block text-xs text-gray-500 mb-1">Rate</label>
@@ -522,7 +556,7 @@ function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, deliveri
                 </div>
               </div>
               <div className="flex items-center justify-between mt-2">
-                <span className="text-xs text-gray-500">Total: <span className="font-medium text-gray-900">₹{Number(row.total).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span></span>
+                <span className="text-xs text-gray-500">Billed: {Number(row.billable_quantity || 0).toLocaleString('en-IN', { maximumFractionDigits: 3 })} {row.billing_uom} · Total: <span className="font-medium text-gray-900">₹{Number(row.total).toLocaleString('en-IN', { minimumFractionDigits: 2 })}</span></span>
                 {rows.length > 1 && <button type="button" onClick={() => setRows(r => r.filter((_, i) => i !== idx))} className="text-red-400 hover:text-red-600 text-xs flex items-center gap-1"><Trash2 size={11} />Remove</button>}
               </div>
             </div>
@@ -546,22 +580,20 @@ function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, deliveri
             : <button onClick={startEdit} className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"><Pencil size={14} /></button>
         )}
       </div>
-      <div className="overflow-x-auto">
-        <table className="w-full text-sm">
+      <div className="overflow-x-auto -mx-5 px-5">
+        <table className="w-full text-sm border-separate border-spacing-0">
           <thead>
-            <tr className="text-left border-b border-gray-100">
-              <th className="pb-2 text-gray-500 font-medium">Sl.</th>
-              <th className="pb-2 text-gray-500 font-medium">Description</th>
-              <th className="pb-2 text-gray-500 font-medium">Qty (Pcs)</th>
-              <th className="pb-2 text-gray-500 font-medium">Qty (Kgs)</th>
-              <th className="pb-2 text-gray-500 font-medium">UOM</th>
-              <th className="pb-2 text-gray-500 font-medium">Delivered</th>
-              <th className="pb-2 text-gray-500 font-medium">Balance</th>
-              <th className="pb-2 text-gray-500 font-medium">Rate</th>
-              <th className="pb-2 text-gray-500 font-medium">Total</th>
+            <tr className="text-xs uppercase tracking-wide text-gray-400">
+              <th className="pb-2.5 pr-3 font-medium text-left w-8">#</th>
+              <th className="pb-2.5 pr-6 font-medium text-left">Description</th>
+              <th className="pb-2.5 px-3 font-medium text-right whitespace-nowrap">Ordered</th>
+              <th className="pb-2.5 px-3 font-medium text-right whitespace-nowrap">Delivered</th>
+              <th className="pb-2.5 px-3 font-medium text-right whitespace-nowrap">Balance</th>
+              <th className="pb-2.5 px-3 font-medium text-right whitespace-nowrap">Rate</th>
+              <th className="pb-2.5 pl-3 font-medium text-right whitespace-nowrap">Total</th>
             </tr>
           </thead>
-          <tbody className="divide-y divide-gray-50">
+          <tbody>
             {(order.items || []).map((item: any, idx: number) => {
               const uom = (item.uom || '').toLowerCase()
               const kgsDriven = uom === 'kgs' || uom === 'mt'
@@ -570,22 +602,25 @@ function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, deliveri
               const delivered = kgsDriven ? Number(item.delivered_kgs || 0) : Number(item.delivered_pcs || 0)
               const balance = Math.max(0, ordered - delivered)
               const pct = ordered > 0 ? Math.min(100, Math.round((delivered / ordered) * 100)) : 0
+              const pcs = Number(item.quantity_pcs || 0)
+              const kgs = Number(item.quantity_kgs || 0)
               return (
-                <tr key={item.id}>
-                  <td className="py-2 text-gray-500">{idx + 1}</td>
-                  <td className="py-2">{item.description || item.product_name}</td>
-                  <td className="py-2">{item.quantity_pcs || 0}</td>
-                  <td className="py-2">{item.quantity_kgs ? Number(item.quantity_kgs).toLocaleString('en-IN') : 0}</td>
-                  <td className="py-2">{item.uom}</td>
-                  <td className="py-2">
-                    <div className="text-gray-700">{Number(delivered).toLocaleString('en-IN', { maximumFractionDigits: 3 })} {unit}</div>
-                    <div className="mt-1 h-1.5 w-20 rounded-full bg-gray-100 overflow-hidden">
+                <tr key={item.id} className="border-t border-gray-100 align-top">
+                  <td className="py-3 pr-3 text-gray-400 tabular-nums">{idx + 1}</td>
+                  <td className="py-3 pr-6 text-gray-800 max-w-md">{item.description || item.product_name}</td>
+                  <td className="py-3 px-3 text-right whitespace-nowrap tabular-nums">
+                    <div className="font-medium text-gray-900">{ordered.toLocaleString('en-IN', { maximumFractionDigits: 3 })} <span className="text-gray-400 font-normal">{unit}</span></div>
+                    <div className="text-xs text-gray-400 mt-0.5">{pcs.toLocaleString('en-IN')} pcs · {kgs.toLocaleString('en-IN')} kgs</div>
+                  </td>
+                  <td className="py-3 px-3 text-right whitespace-nowrap tabular-nums">
+                    <div className="text-gray-700">{delivered.toLocaleString('en-IN', { maximumFractionDigits: 3 })} <span className="text-gray-400">{unit}</span></div>
+                    <div className="mt-1.5 ml-auto h-1.5 w-20 rounded-full bg-gray-100 overflow-hidden">
                       <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
                     </div>
                   </td>
-                  <td className="py-2 font-medium">{Number(balance).toLocaleString('en-IN', { maximumFractionDigits: 3 })} {unit}</td>
-                  <td className="py-2">₹{Number(item.rate).toLocaleString('en-IN')}</td>
-                  <td className="py-2 font-medium">₹{Number(item.total).toLocaleString('en-IN')}</td>
+                  <td className="py-3 px-3 text-right whitespace-nowrap tabular-nums font-medium text-gray-900">{balance.toLocaleString('en-IN', { maximumFractionDigits: 3 })} <span className="text-gray-400 font-normal">{unit}</span></td>
+                  <td className="py-3 px-3 text-right whitespace-nowrap tabular-nums text-gray-700">₹{Number(item.rate).toLocaleString('en-IN')}</td>
+                  <td className="py-3 pl-3 text-right whitespace-nowrap tabular-nums font-semibold text-gray-900">₹{Number(item.total).toLocaleString('en-IN')}</td>
                 </tr>
               )
             })}

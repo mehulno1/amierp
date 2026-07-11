@@ -50,7 +50,7 @@ function POItemRow({ index, control, register, setValue, onRemove, canRemove }: 
       <div><label className="block text-xs font-medium text-gray-600 mb-1">Qty</label><input type="number" step="0.001" className="input-field" {...register(`items.${index}.qty`)} /></div>
       <div><label className="block text-xs font-medium text-gray-600 mb-1">UOM</label>
         <select className="input-field" {...register(`items.${index}.uom`)}>
-          <option value="nos">Nos</option><option value="pcs">Pcs</option><option value="kgs">Kgs</option><option value="mtr">Mtr</option><option value="set">Set</option>
+          <option value="nos">Nos</option><option value="pcs">Pcs</option><option value="kgs">Kgs</option><option value="mtr">Mtr</option><option value="ltr">Ltr</option><option value="set">Set</option>
         </select>
       </div>
       <div><label className="block text-xs font-medium text-gray-600 mb-1">Rate (₹)</label><input type="number" step="0.01" className="input-field" {...register(`items.${index}.rate`)} /></div>

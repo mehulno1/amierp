@@ -126,16 +126,22 @@ export async function updateRequisitionStatus(req: AuthRequest, res: Response) {
         const outstanding = Math.max(0, parseFloat(item.qty) - parseFloat(item.received_qty || 0))
         if (outstanding <= 0) continue
         const [invRows] = await conn.execute(
-          'SELECT id, brand_id, current_stock FROM inventory_items WHERE id = ? AND is_active = 1',
+          'SELECT id, brand_id, uom, current_stock, current_stock_kgs FROM inventory_items WHERE id = ? AND is_active = 1',
           [item.spare_part_id]
         ) as any[]
         if (!(invRows as any[]).length) continue
         const inv = (invRows as any[])[0]
-        const newStock = parseFloat(inv.current_stock) + outstanding
-        await conn.execute('UPDATE inventory_items SET current_stock = ? WHERE id = ?', [newStock, inv.id])
+        // Credit the dimension matching the item's unit: weight units -> kgs, else pcs.
+        const isKgs = inv.uom === 'kgs' || inv.uom === 'gms'
+        const beforePcs = parseFloat(inv.current_stock)
+        const beforeKgs = parseFloat(inv.current_stock_kgs)
+        const afterPcs = isKgs ? beforePcs : beforePcs + outstanding
+        const afterKgs = isKgs ? beforeKgs + outstanding : beforeKgs
+        await conn.execute('UPDATE inventory_items SET current_stock = ?, current_stock_kgs = ? WHERE id = ?', [afterPcs, afterKgs, inv.id])
         await conn.execute(
-          'INSERT INTO inventory_transactions (brand_id, inventory_item_id, transaction_type, quantity, notes, created_by, stock_before, stock_after) VALUES (?,?,?,?,?,?,?,?)',
-          [inv.brand_id, inv.id, 'purchase', outstanding, `Requisition #${id} delivered`, req.user!.id, inv.current_stock, newStock]
+          `INSERT INTO inventory_transactions (brand_id, inventory_item_id, transaction_type, quantity, quantity_kgs, notes, created_by, stock_before, stock_after, stock_before_kgs, stock_after_kgs)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+          [inv.brand_id, inv.id, 'purchase', isKgs ? 0 : outstanding, isKgs ? outstanding : 0, `Requisition #${id} delivered`, req.user!.id, beforePcs, afterPcs, beforeKgs, afterKgs]
         )
         await conn.execute('UPDATE requisition_items SET received_qty = qty WHERE id = ?', [item.id])
       }

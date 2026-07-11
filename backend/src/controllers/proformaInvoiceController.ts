@@ -75,8 +75,8 @@ export async function generatePI(params: GeneratePIParams): Promise<void> {
 
   for (const item of items) {
     await executeQuery(
-      'INSERT INTO pi_items (pi_id, material_no, description, quantity_pcs, quantity_kgs, uom, rate, total) VALUES (?,?,?,?,?,?,?,?)',
-      [piId, item.material_no ?? null, item.description || item.product_name || null, item.quantity_pcs ?? 0, item.quantity_kgs ?? 0, item.uom ?? 'pcs', item.rate ?? 0, item.total ?? 0]
+      'INSERT INTO pi_items (pi_id, material_no, description, quantity_pcs, quantity_kgs, uom, billable_quantity, billing_uom, rate, total) VALUES (?,?,?,?,?,?,?,?,?,?)',
+      [piId, item.material_no ?? null, item.description || item.product_name || null, item.quantity_pcs ?? 0, item.quantity_kgs ?? 0, item.uom ?? 'pcs', item.billable_quantity ?? 0, item.billing_uom ?? null, item.rate ?? 0, item.total ?? 0]
     )
   }
 }

@@ -110,8 +110,8 @@ export async function createOrder(req: AuthRequest, res: Response) {
 
     for (const item of (items || [])) {
       await conn.execute(
-        'INSERT INTO order_items (order_id, product_variant_id, product_name, variant_name, description, quantity_pcs, quantity_kgs, uom, rate, total) VALUES (?,?,?,?,?,?,?,?,?,?)',
-        [orderId, item.product_variant_id || null, item.product_name ?? null, item.variant_name ?? null, item.description ?? null, item.quantity_pcs || 0, item.quantity_kgs || 0, item.uom || 'pcs', item.rate ?? 0, item.total ?? 0]
+        'INSERT INTO order_items (order_id, product_variant_id, product_name, variant_name, description, quantity_pcs, quantity_kgs, uom, billable_quantity, billing_uom, rate, total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+        [orderId, item.product_variant_id || null, item.product_name ?? null, item.variant_name ?? null, item.description ?? null, item.quantity_pcs || 0, item.quantity_kgs || 0, item.uom || 'pcs', item.billable_quantity || 0, item.billing_uom ?? null, item.rate ?? 0, item.total ?? 0]
       )
     }
 
@@ -237,8 +237,8 @@ export async function updateOrderItems(req: AuthRequest, res: Response) {
     await conn.execute('DELETE FROM order_items WHERE order_id = ?', [id])
     for (const item of (items || [])) {
       await conn.execute(
-        'INSERT INTO order_items (order_id, product_variant_id, description, quantity_pcs, quantity_kgs, uom, rate, total) VALUES (?,?,?,?,?,?,?,?)',
-        [id, item.product_variant_id || null, item.description ?? null, item.quantity_pcs || 0, item.quantity_kgs || 0, item.uom || 'pcs', item.rate ?? 0, item.total ?? 0]
+        'INSERT INTO order_items (order_id, product_variant_id, description, quantity_pcs, quantity_kgs, uom, billable_quantity, billing_uom, rate, total) VALUES (?,?,?,?,?,?,?,?,?,?)',
+        [id, item.product_variant_id || null, item.description ?? null, item.quantity_pcs || 0, item.quantity_kgs || 0, item.uom || 'pcs', item.billable_quantity || 0, item.billing_uom ?? null, item.rate ?? 0, item.total ?? 0]
       )
     }
     await conn.commit()
