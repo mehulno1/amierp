@@ -21,7 +21,7 @@ export default function MetricCard({
   return (
     <div
       onClick={onClick}
-      className={`p-5 ${onClick ? 'cursor-pointer' : ''} transition-colors duration-150`}
+      className={`p-3 sm:p-5 ${onClick ? 'cursor-pointer' : ''} transition-colors duration-150`}
       style={{
         background: '#fff',
         border: '1px solid var(--rule-lt)',
@@ -29,7 +29,7 @@ export default function MetricCard({
       }}
     >
       <div
-        className="uppercase mb-3.5"
+        className="uppercase mb-2 sm:mb-3.5"
         style={{
           fontFamily: 'var(--font-mono)',
           fontSize: 10,
@@ -41,10 +41,10 @@ export default function MetricCard({
       </div>
       <div className="flex items-baseline justify-between gap-2">
         <div
+          className="text-[24px] sm:text-[38px]"
           style={{
             fontFamily: 'var(--font-serif)',
             fontWeight: 300,
-            fontSize: 38,
             lineHeight: 1,
             letterSpacing: '-0.02em',
             color: 'var(--color-ink)',
@@ -66,7 +66,7 @@ export default function MetricCard({
       </div>
       {sub && (
         <div
-          className="mt-2"
+          className="mt-1 sm:mt-2 hidden sm:block"
           style={{
             fontFamily: 'var(--font-sans)',
             fontSize: 12,
