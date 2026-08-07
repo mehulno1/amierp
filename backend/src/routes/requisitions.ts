@@ -1,5 +1,5 @@
 import { Router } from 'express'
-import { getRequisitions, getRequisition, createRequisition, updateRequisitionStatus, addVendorQuotation, selectQuotation, hardDeleteRequisition, updateRequisitionItems, deleteVendorQuotation, approveRequisition, rejectRequisition, resubmitRequisition } from '../controllers/requisitionController'
+import { getRequisitions, getRequisition, createRequisition, updateRequisitionStatus, addVendorQuotation, selectQuotation, hardDeleteRequisition, updateRequisitionItems, deleteVendorQuotation, approveRequisition, rejectRequisition, resubmitRequisition, receiveRequisitionItems } from '../controllers/requisitionController'
 import { authenticateToken, requireBrandContext, requireRequisitionAdmin, requireRequisitionApprover, requireSuperAdmin } from '../middleware/auth'
 
 const router = Router()
@@ -10,6 +10,7 @@ router.post('/', createRequisition)
 router.patch('/:id/status', requireRequisitionAdmin, updateRequisitionStatus)
 // Items editable by super_admin (any state) or the creator while awaiting approval / rejected — enforced in the controller.
 router.put('/:id/items', updateRequisitionItems)
+router.post('/:id/receive', requireRequisitionAdmin, receiveRequisitionItems)
 router.post('/:id/approve', requireRequisitionApprover, approveRequisition)
 router.post('/:id/reject', requireRequisitionApprover, rejectRequisition)
 router.post('/:id/resubmit', resubmitRequisition)

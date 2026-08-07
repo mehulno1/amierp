@@ -495,17 +495,29 @@ export default function Inventory() {
   const { sorted, sortCol, sortDir, toggle } = useSortable(filtered, 'item_name')
   const si = (col: string) => <SortIcon col={col} sortCol={sortCol} sortDir={sortDir} />
 
-  const exportExcel = () => {
-    const ws = XLSX.utils.json_to_sheet(sorted.map(i => ({
+  const exportExcel = async () => {
+    // Incoming/outgoing over the last 30 days, from the transactions ledger.
+    // Exported alongside current stock so the sheet answers "kitna aaya / kitna gaya".
+    let movement = new Map<number, any>()
+    try {
+      const r = await inventoryApi.movementSummary(30)
+      movement = new Map((r.data.data as any[]).map((m: any) => [m.inventory_item_id, m]))
+    } catch { toast.error('Movement totals unavailable — exporting stock only') }
+    const ws = XLSX.utils.json_to_sheet(sorted.map(i => {
+      const m = movement.get(i.id) || {}
+      return {
       Code: i.item_code, Name: i.item_name, UOM: i.uom,
       'On Hand (UOM)': Number(i.current_stock), 'On Hand (kgs)': Number(i.current_stock_kgs || 0),
       'Reserved (UOM)': Number(i.reserved_stock || 0), 'Reserved (kgs)': Number(i.reserved_kgs || 0),
       'Available (UOM)': Number(i.current_stock) - Number(i.reserved_stock || 0),
       'Available (kgs)': Number(i.current_stock_kgs || 0) - Number(i.reserved_kgs || 0),
+      'Incoming 30d (UOM)': Number(m.in_qty || 0), 'Incoming 30d (kgs)': Number(m.in_kgs || 0),
+      'Outgoing 30d (UOM)': Number(m.out_qty || 0), 'Outgoing 30d (kgs)': Number(m.out_kgs || 0),
       'Min (UOM)': i.minimum_stock, 'Max (UOM)': i.maximum_stock,
       'Min (kgs)': i.minimum_stock_kgs, 'Max (kgs)': i.maximum_stock_kgs,
       'Last Updated': fmtDate((i as any).updated_at),
-    })))
+      }
+    }))
     const wb = XLSX.utils.book_new()
     XLSX.utils.book_append_sheet(wb, ws, activeType)
     XLSX.writeFile(wb, `inventory_${activeType}.xlsx`)
@@ -613,10 +625,10 @@ export default function Inventory() {
         />
       </div>
 
-      {/* Search + stock filter */}
+      {/* Search + stock filter — sticky so it stays reachable while scrolling the list */}
       <div
         className="flex flex-wrap gap-3 items-center mb-4 p-3"
-        style={{ background: '#fff', border: '1px solid var(--rule-lt)' }}
+        style={{ background: '#fff', border: '1px solid var(--rule-lt)', position: 'sticky', top: 0, zIndex: 10 }}
       >
         <div className="relative flex-1 min-w-52">
           <Search

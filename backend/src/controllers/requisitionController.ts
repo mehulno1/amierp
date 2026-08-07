@@ -2,6 +2,7 @@ import { Response } from 'express'
 import { executeQuery, pool } from '../config/database'
 import { getNextDocumentNumber } from '../utils/documentSequence'
 import { AuthRequest } from '../types'
+import { createNotification } from './notificationController'
 
 export async function getRequisitions(req: AuthRequest, res: Response) {
   try {
@@ -229,12 +230,31 @@ export async function updateRequisitionItems(req: AuthRequest, res: Response) {
     }
     const { items } = req.body
     await conn.beginTransaction()
-    await conn.execute('DELETE FROM requisition_items WHERE requisition_id = ?', [id])
+    // Update rows in place when the client sends the line's id — this preserves
+    // received_qty and any vendor_quotation_items pointing at the line. Only rows
+    // the client dropped are deleted; rows without an id are inserted fresh.
+    const existing = await executeQuery<any>('SELECT id FROM requisition_items WHERE requisition_id = ?', [id])
+    const keptIds = new Set<number>()
     for (const item of (items || [])) {
-      await conn.execute(
-        'INSERT INTO requisition_items (requisition_id, spare_part_id, description, area, qty, uom, no_of_days) VALUES (?,?,?,?,?,?,?)',
-        [id, item.spare_part_id || null, item.description, item.area ?? null, item.qty, item.uom || 'nos', item.no_of_days ?? null]
-      )
+      const itemId = Number(item.id) || 0
+      if (itemId && existing.some((e: any) => e.id === itemId)) {
+        keptIds.add(itemId)
+        await conn.execute(
+          'UPDATE requisition_items SET spare_part_id = ?, description = ?, area = ?, qty = ?, uom = ?, no_of_days = ? WHERE id = ? AND requisition_id = ?',
+          [item.spare_part_id || null, item.description, item.area ?? null, item.qty, item.uom || 'nos', item.no_of_days ?? null, itemId, id]
+        )
+      } else {
+        await conn.execute(
+          'INSERT INTO requisition_items (requisition_id, spare_part_id, description, area, qty, uom, no_of_days) VALUES (?,?,?,?,?,?,?)',
+          [id, item.spare_part_id || null, item.description, item.area ?? null, item.qty, item.uom || 'nos', item.no_of_days ?? null]
+        )
+      }
+    }
+    for (const e of existing) {
+      if (!keptIds.has(e.id)) {
+        await conn.execute('DELETE FROM vendor_quotation_items WHERE requisition_item_id = ?', [e.id])
+        await conn.execute('DELETE FROM requisition_items WHERE id = ?', [e.id])
+      }
     }
     await conn.commit()
     conn.release()
@@ -288,6 +308,15 @@ export async function approveRequisition(req: AuthRequest, res: Response) {
       [req.user!.id, id, ...ids]
     )
     if (!(result as any).affectedRows) return res.status(400).json({ success: false, error: 'Requisition is not awaiting approval' })
+    const rows = await executeQuery<any>('SELECT brand_id, created_by, indent_no FROM requisitions WHERE id = ?', [id])
+    if (rows.length && rows[0].created_by !== req.user!.id) {
+      createNotification({
+        brand_id: rows[0].brand_id, user_id: rows[0].created_by, type: 'requisition_approved',
+        title: `Indent ${rows[0].indent_no} approved`,
+        body: `Your requisition ${rows[0].indent_no} was approved by ${req.user!.name || 'an approver'}.`,
+        reference_type: 'requisition', reference_id: Number(id),
+      })
+    }
     res.json({ success: true, message: 'Requisition approved' })
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
 }
@@ -304,8 +333,108 @@ export async function rejectRequisition(req: AuthRequest, res: Response) {
       [reason, req.user!.id, id, ...ids]
     )
     if (!(result as any).affectedRows) return res.status(400).json({ success: false, error: 'Requisition is not awaiting approval' })
+    const rows = await executeQuery<any>('SELECT brand_id, created_by, indent_no FROM requisitions WHERE id = ?', [id])
+    if (rows.length && rows[0].created_by !== req.user!.id) {
+      createNotification({
+        brand_id: rows[0].brand_id, user_id: rows[0].created_by, type: 'requisition_rejected',
+        title: `Indent ${rows[0].indent_no} rejected`,
+        body: String(reason),
+        reference_type: 'requisition', reference_id: Number(id),
+      })
+    }
     res.json({ success: true, message: 'Requisition rejected' })
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
+}
+
+// ── Direct per-item receipt (no-PO path) ───────────────────────────────────
+// Records received quantities against individual requisition lines when goods arrive
+// without going through a PO/GRN. Credits spare-parts inventory the same way the GRN
+// flow does and moves the requisition to partially_delivered / delivered.
+// Blocked when the requisition has a PO: there the GRN flow owns received_qty (its
+// cascade recomputes the column from PO lines and would overwrite direct entries).
+export async function receiveRequisitionItems(req: AuthRequest, res: Response) {
+  const conn = await pool.getConnection()
+  try {
+    const { id } = req.params
+    const ids = req.userBrandIds!
+    const rows = await executeQuery<any>(
+      `SELECT id, brand_id, status, created_by, indent_no FROM requisitions WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`,
+      [id, ...ids]
+    )
+    if (!rows.length) { conn.release(); return res.status(404).json({ success: false, error: 'Not found' }) }
+    const reqRow = rows[0]
+    if (['pending_approval', 'rejected', 'cancelled'].includes(reqRow.status)) {
+      conn.release()
+      return res.status(400).json({ success: false, error: 'Requisition is not in a receivable state' })
+    }
+    const poRows = await executeQuery<any>('SELECT COUNT(*) AS cnt FROM purchase_orders WHERE requisition_id = ?', [id])
+    if (poRows[0].cnt > 0) {
+      conn.release()
+      return res.status(400).json({ success: false, error: 'This indent has a PO — record the receipt as a GRN on the purchase order instead' })
+    }
+
+    const lines = await executeQuery<any>('SELECT * FROM requisition_items WHERE requisition_id = ?', [id])
+    const byId = new Map<number, any>(lines.map((l: any) => [l.id, l]))
+    const EPS = 0.001
+
+    // Validate every entry before touching anything.
+    const entries: { line: any; qty: number }[] = []
+    for (const it of (req.body.items || [])) {
+      const qty = Number(it.qty) || 0
+      if (qty <= EPS) continue
+      const line = byId.get(Number(it.item_id))
+      if (!line) { conn.release(); return res.status(400).json({ success: false, error: `Unknown requisition line ${it.item_id}` }) }
+      const outstanding = Math.max(0, parseFloat(line.qty) - parseFloat(line.received_qty || 0))
+      if (qty > outstanding + EPS) {
+        conn.release()
+        return res.status(400).json({ success: false, error: `Over-receipt on "${line.description}": ${qty} exceeds pending ${outstanding}` })
+      }
+      entries.push({ line, qty })
+    }
+    if (!entries.length) { conn.release(); return res.status(400).json({ success: false, error: 'At least one line with a positive received quantity is required' }) }
+
+    await conn.beginTransaction()
+    for (const { line, qty } of entries) {
+      await conn.execute('UPDATE requisition_items SET received_qty = received_qty + ? WHERE id = ?', [qty, line.id])
+      if (!line.spare_part_id) continue
+      const [invRows] = await conn.execute(
+        'SELECT id, brand_id, uom, current_stock, current_stock_kgs FROM inventory_items WHERE id = ? AND is_active = 1',
+        [line.spare_part_id]
+      ) as any[]
+      if (!(invRows as any[]).length) continue
+      const inv = (invRows as any[])[0]
+      const isKgs = inv.uom === 'kgs' || inv.uom === 'gms'
+      const beforePcs = parseFloat(inv.current_stock)
+      const beforeKgs = parseFloat(inv.current_stock_kgs)
+      const afterPcs = isKgs ? beforePcs : beforePcs + qty
+      const afterKgs = isKgs ? beforeKgs + qty : beforeKgs
+      await conn.execute('UPDATE inventory_items SET current_stock = ?, current_stock_kgs = ? WHERE id = ?', [afterPcs, afterKgs, inv.id])
+      await conn.execute(
+        `INSERT INTO inventory_transactions (brand_id, inventory_item_id, transaction_type, quantity, quantity_kgs, reference_id, reference_type, notes, created_by, stock_before, stock_after, stock_before_kgs, stock_after_kgs)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+        [inv.brand_id, inv.id, 'purchase', isKgs ? 0 : qty, isKgs ? qty : 0, String(id), 'requisition_receipt', `Received against indent ${reqRow.indent_no}`, req.user!.id, beforePcs, afterPcs, beforeKgs, afterKgs]
+      )
+    }
+
+    // Derive the requisition status from the updated lines.
+    const [after] = await conn.execute('SELECT qty, received_qty FROM requisition_items WHERE requisition_id = ?', [id]) as any[]
+    const allDone = (after as any[]).every((l: any) => parseFloat(l.received_qty) + EPS >= parseFloat(l.qty))
+    await conn.execute('UPDATE requisitions SET status = ? WHERE id = ?', [allDone ? 'delivered' : 'partially_delivered', id])
+    await conn.commit(); conn.release()
+
+    if (reqRow.created_by !== req.user!.id) {
+      createNotification({
+        brand_id: reqRow.brand_id, user_id: reqRow.created_by, type: 'requisition_received',
+        title: `Material received against ${reqRow.indent_no}`,
+        body: entries.map(e => `${e.line.description}: ${e.qty} ${e.line.uom || ''}`.trim()).join('; '),
+        reference_type: 'requisition', reference_id: Number(id),
+      })
+    }
+    res.json({ success: true, message: 'Receipt recorded' })
+  } catch (err: any) {
+    await conn.rollback(); conn.release()
+    res.status(500).json({ success: false, error: err.message })
+  }
 }
 
 export async function resubmitRequisition(req: AuthRequest, res: Response) {

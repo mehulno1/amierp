@@ -82,6 +82,7 @@ function POFormModal({ po, onClose, onSuccess }: { po?: any; onClose: () => void
     ? po.items.map((i: any) => ({
         material_no: i.material_no || '',
         description: i.description || '',
+        spare_part_id: i.spare_part_id || null,
         qty: i.qty || 0,
         uom: i.uom || 'nos',
         rate: i.rate || 0,
@@ -145,7 +146,15 @@ function POFormModal({ po, onClose, onSuccess }: { po?: any; onClose: () => void
         const rate = parseFloat(i.rate) || 0
         return { ...i, qty, rate, total: parseFloat((qty * rate).toFixed(2)) }
       })
-      const payload = { ...data, brand_id: parseInt(data.brand_id), vendor_id: parseInt(data.vendor_id), items }
+      const payload = {
+        ...data,
+        brand_id: parseInt(data.brand_id),
+        vendor_id: parseInt(data.vendor_id),
+        // Link the PO back to its indent — the GRN cascade and the indent's balance
+        // bar rely on this id (and on per-line spare_part_id) being stored.
+        requisition_id: fromRequisition ? po.requisition_id || null : undefined,
+        items,
+      }
       if (isEdit) await purchaseOrdersApi.update(po.id, payload)
       else await purchaseOrdersApi.create(payload)
       onSuccess()

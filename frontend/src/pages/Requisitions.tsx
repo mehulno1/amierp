@@ -266,6 +266,11 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
   const [editingItems, setEditingItems] = useState(false)
   const [editRows, setEditRows] = useState<any[]>([])
   const [savingItems, setSavingItems] = useState(false)
+  const [receiving, setReceiving] = useState(false)
+  const [recvQty, setRecvQty] = useState<Record<number, string>>({})
+  const [savingReceipt, setSavingReceipt] = useState(false)
+  // Per-item tick state for Generate PO — lets one indent be split across several POs.
+  const [poPick, setPoPick] = useState<Record<number, boolean>>({})
   const { data: vendors = [] } = useQuery({ queryKey: ['vendors'], queryFn: () => vendorsApi.list().then(r => r.data.data) })
   const { data: req, isLoading } = useQuery({ queryKey: ['requisition', requisitionId], queryFn: () => requisitionsApi.get(requisitionId).then(r => r.data.data) })
 
@@ -291,8 +296,35 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
     } catch { toast.error('Failed') }
   }
 
+  const pendingOf = (item: any) => Math.max(0, (Number(item.qty) || 0) - (Number(item.received_qty) || 0))
+
+  const startReceiving = () => {
+    const init: Record<number, string> = {}
+    for (const it of (req?.items || [])) init[it.id] = ''
+    setRecvQty(init)
+    setReceiving(true)
+  }
+
+  const saveReceipt = async () => {
+    const items = Object.entries(recvQty)
+      .map(([id, v]) => ({ item_id: Number(id), qty: parseFloat(v) || 0 }))
+      .filter(e => e.qty > 0)
+    if (!items.length) { toast.error('Enter a received quantity on at least one line'); return }
+    setSavingReceipt(true)
+    try {
+      await requisitionsApi.receive(requisitionId, items)
+      qc.invalidateQueries({ queryKey: ['requisition', requisitionId] })
+      qc.invalidateQueries({ queryKey: ['requisitions'] })
+      qc.invalidateQueries({ queryKey: ['inventory'] })
+      setReceiving(false)
+      toast.success('Receipt recorded')
+    } catch (err: any) { toast.error(err.response?.data?.error || 'Failed') }
+    finally { setSavingReceipt(false) }
+  }
+
   const startEditItems = () => {
     setEditRows((req?.items || []).map((item: any) => ({
+      id: item.id,
       spare_part_id: item.spare_part_id ?? null,
       description: item.description || '',
       area: item.area || '',
@@ -368,15 +400,23 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
   }
 
   const generatePO = (quotation: any) => {
-    const items = (req?.items || []).map((ri: any) => {
+    // Only the ticked lines go on this PO (default: all) — so one indent can be split
+    // into separate POs (e.g. oils vs packaging), each with its own GRN later.
+    // Qty defaults to the line's still-pending balance and each line carries its
+    // spare_part_id so goods receipts credit inventory without description matching.
+    const picked = (req?.items || []).filter((ri: any) => poPick[ri.id] !== false)
+    if (!picked.length) { toast.error('Tick at least one item to put on this PO'); return }
+    const items = picked.map((ri: any) => {
       const qi = (quotation.items || []).find((q: any) => q.requisition_item_id === ri.id)
+      const qty = pendingOf(ri) || ri.qty || 0
       return {
         material_no: '',
         description: ri.description || '',
-        qty: ri.qty || 0,
+        spare_part_id: ri.spare_part_id || null,
+        qty,
         uom: qi?.uom || ri.uom || 'nos',
         rate: qi?.rate || 0,
-        total: parseFloat(((ri.qty || 0) * (qi?.rate || 0)).toFixed(2)),
+        total: parseFloat((qty * (qi?.rate || 0)).toFixed(2)),
       }
     })
     onClose()
@@ -425,12 +465,16 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
             const balance = Math.max(ordered - received, 0)
             const pct = Math.min((received / ordered) * 100, 100)
             const done = balance <= 0
+            // Label the totals with the unit when every line shares one; mixed-unit
+            // indents stay unitless here (each line shows its own unit in the table).
+            const uoms = new Set(lines.map((it: any) => it.uom || 'nos'))
+            const u = uoms.size === 1 ? ` ${[...uoms][0]}` : ''
             return (
               <div className="rounded-lg border border-gray-200 p-3">
                 <div className="flex items-center justify-between text-sm mb-1.5">
                   <span className="font-medium text-gray-700">Received against indent</span>
                   <span className={done ? 'text-green-600 font-medium' : 'text-orange-600 font-medium'}>
-                    {received} / {ordered}{balance > 0 ? ` · ${balance} pending` : ' · complete'}
+                    {received}{u} / {ordered}{u}{balance > 0 ? ` · ${balance}${u} pending` : ' · complete'}
                   </span>
                 </div>
                 <div className="h-1.5 w-full rounded-full bg-gray-100 overflow-hidden">
@@ -467,7 +511,13 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
           <div>
             <div className="flex items-center justify-between mb-3">
               <h3 className="font-medium text-gray-900">Items Required</h3>
-              {canEditItems && !editingItems && <button onClick={startEditItems} className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"><Pencil size={14} /></button>}
+              <div className="flex items-center gap-2">
+                {isRequisitionAdmin() && !preApproval && !editingItems && !receiving &&
+                  !['po_raised', 'delivered', 'cancelled'].includes(req?.status) && (
+                  <button onClick={startReceiving} className="btn-secondary text-xs py-1">Record receipt</button>
+                )}
+                {canEditItems && !editingItems && !receiving && <button onClick={startEditItems} className="text-gray-400 hover:text-gray-600 p-1 rounded hover:bg-gray-100"><Pencil size={14} /></button>}
+              </div>
             </div>
             {editingItems ? (
               <div className="space-y-2">
@@ -491,26 +541,68 @@ function ViewRequisitionModal({ requisitionId, onClose }: { requisitionId: numbe
                 </div>
               </div>
             ) : (
+              (() => {
+                const hasSelectedQuote = (req?.quotations || []).some((q: any) => q.status === 'selected')
+                return (
               <table className="w-full text-sm">
                 <thead><tr className="text-left border-b border-gray-100">
+                  {hasSelectedQuote && <th className="pb-2 text-gray-500 font-medium" title="Tick the items to include on the next PO">PO</th>}
                   <th className="pb-2 text-gray-500 font-medium">Sl.</th><th className="pb-2 text-gray-500 font-medium">Description</th>
                   <th className="pb-2 text-gray-500 font-medium">Area</th><th className="pb-2 text-gray-500 font-medium">Qty</th>
                   <th className="pb-2 text-gray-500 font-medium">UOM</th><th className="pb-2 text-gray-500 font-medium">Days</th><th className="pb-2 text-gray-500 font-medium">Received</th>
+                  {receiving && <th className="pb-2 text-gray-500 font-medium">Receive now</th>}
                 </tr></thead>
                 <tbody className="divide-y divide-gray-50">
-                  {(req?.items || []).map((item: any, idx: number) => (
+                  {(req?.items || []).map((item: any, idx: number) => {
+                    const pending = pendingOf(item)
+                    return (
                     <tr key={item.id}>
+                      {hasSelectedQuote && (
+                        <td className="py-2">
+                          <input
+                            type="checkbox"
+                            checked={poPick[item.id] !== false}
+                            onChange={e => setPoPick(p => ({ ...p, [item.id]: e.target.checked }))}
+                          />
+                        </td>
+                      )}
                       <td className="py-2 text-gray-500">{idx+1}</td>
                       <td className="py-2">{item.description}</td>
                       <td className="py-2 text-gray-500">{item.area || '—'}</td>
                       <td className="py-2">{item.qty}</td>
                       <td className="py-2 text-gray-500">{item.uom}</td>
                       <td className="py-2 text-gray-500">{item.no_of_days || '—'}</td>
-                      <td className="py-2 text-green-600">{item.received_qty}</td>
+                      <td className="py-2">
+                        <span className="text-green-600">{Number(item.received_qty) || 0} {item.uom}</span>
+                        {pending > 0 && <span className="text-orange-500 text-xs"> · {pending} pending</span>}
+                      </td>
+                      {receiving && (
+                        <td className="py-2">
+                          <input
+                            type="number" step="0.001" min="0" max={pending}
+                            className="input-field text-xs w-24 py-1"
+                            placeholder={pending > 0 ? `≤ ${pending}` : 'complete'}
+                            disabled={pending <= 0}
+                            value={recvQty[item.id] ?? ''}
+                            onChange={e => setRecvQty(r => ({ ...r, [item.id]: e.target.value }))}
+                          />
+                        </td>
+                      )}
                     </tr>
-                  ))}
+                  )})}
                 </tbody>
               </table>
+                )
+              })()
+            )}
+            {receiving && (
+              <div className="flex items-center gap-2 mt-3">
+                <button onClick={saveReceipt} disabled={savingReceipt} className="btn-primary text-xs py-1.5 flex items-center gap-1">
+                  <Check size={12} />{savingReceipt ? 'Saving…' : 'Save receipt'}
+                </button>
+                <button onClick={() => setReceiving(false)} className="btn-secondary text-xs py-1.5">Cancel</button>
+                <span className="text-xs text-gray-400">Stock is credited for linked spare parts; the indent moves to partially delivered / delivered.</span>
+              </div>
             )}
           </div>
 

@@ -2,6 +2,7 @@ import { Response } from 'express'
 import { executeQuery, pool } from '../config/database'
 import { getNextDocumentNumber } from '../utils/documentSequence'
 import { AuthRequest } from '../types'
+import { createNotification } from './notificationController'
 
 const EPS = 0.001
 
@@ -210,6 +211,25 @@ export async function createReceipt(req: AuthRequest, res: Response) {
 
     await recomputeAndCascade(conn, Number(id))
     await conn.commit(); conn.release()
+
+    // Tell the indent's creator their material has arrived (post-commit, best-effort).
+    try {
+      const reqRows = await executeQuery<any>(
+        `SELECT r.id, r.brand_id, r.created_by, r.indent_no, po.po_no
+         FROM purchase_orders po JOIN requisitions r ON r.id = po.requisition_id
+         WHERE po.id = ?`,
+        [id]
+      )
+      if (reqRows.length && reqRows[0].created_by !== req.user!.id) {
+        createNotification({
+          brand_id: reqRows[0].brand_id, user_id: reqRows[0].created_by, type: 'requisition_received',
+          title: `Material received against ${reqRows[0].indent_no}`,
+          body: `Goods receipt ${receipt_no} recorded on ${reqRows[0].po_no}.`,
+          reference_type: 'requisition', reference_id: reqRows[0].id,
+        })
+      }
+    } catch (e) { console.error('GRN notification failed:', e) }
+
     res.status(201).json({ success: true, data: { id: receiptId, receipt_no } })
   } catch (err: any) {
     await conn.rollback(); conn.release()

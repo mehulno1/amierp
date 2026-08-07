@@ -77,6 +77,7 @@ export const inventoryApi = {
   adjust: (id: number, data: any) => api.post(`/inventory-items/${id}/adjust`, data),
   updateLevels: (id: number, data: any) => api.patch(`/inventory-items/${id}/levels`, data),
   getTransactions: (id: number) => api.get(`/inventory-items/${id}/transactions`),
+  movementSummary: (days = 30) => api.get('/inventory-items/movement-summary', { params: { days } }),
   delete: (id: number) => api.delete(`/inventory-items/${id}`),
 }
 
@@ -102,6 +103,14 @@ export const requisitionsApi = {
   approve: (id: number) => api.post(`/requisitions/${id}/approve`),
   reject: (id: number, reason: string) => api.post(`/requisitions/${id}/reject`, { reason }),
   resubmit: (id: number) => api.post(`/requisitions/${id}/resubmit`),
+  receive: (id: number, items: { item_id: number; qty: number }[]) => api.post(`/requisitions/${id}/receive`, { items }),
+}
+
+// Notifications
+export const notificationsApi = {
+  list: () => api.get('/notifications'),
+  markRead: (id: number) => api.post(`/notifications/${id}/read`),
+  markAllRead: () => api.post('/notifications/read-all'),
 }
 
 // Purchase Orders

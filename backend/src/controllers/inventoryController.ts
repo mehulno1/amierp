@@ -159,6 +159,28 @@ export async function updateStockLevels(req: AuthRequest, res: Response) {
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
 }
 
+// Per-item incoming/outgoing totals over a window (default 30 days), both dimensions.
+// Types follow reportsController.stockMovement: purchase/opening/manual_add/release are
+// inflow; everything else (dispatch, manual_deduct, reserved, transfer, adjustment) outflow.
+export async function getMovementSummary(req: AuthRequest, res: Response) {
+  try {
+    const days = Math.max(1, Math.min(365, parseInt(String(req.query.days)) || 30))
+    const ids = req.brandId ? [req.brandId] : req.userBrandIds!
+    const rows = await executeQuery<any>(
+      `SELECT inventory_item_id,
+         SUM(CASE WHEN transaction_type IN ('purchase','opening_stock','set_opening','manual_add','release') THEN quantity ELSE 0 END) AS in_qty,
+         SUM(CASE WHEN transaction_type IN ('purchase','opening_stock','set_opening','manual_add','release') THEN COALESCE(quantity_kgs,0) ELSE 0 END) AS in_kgs,
+         SUM(CASE WHEN transaction_type NOT IN ('purchase','opening_stock','set_opening','manual_add','release') THEN quantity ELSE 0 END) AS out_qty,
+         SUM(CASE WHEN transaction_type NOT IN ('purchase','opening_stock','set_opening','manual_add','release') THEN COALESCE(quantity_kgs,0) ELSE 0 END) AS out_kgs
+       FROM inventory_transactions
+       WHERE brand_id IN (${ids.map(() => '?').join(',')}) AND created_at >= DATE_SUB(NOW(), INTERVAL ? DAY)
+       GROUP BY inventory_item_id`,
+      [...ids, days]
+    )
+    res.json({ success: true, data: rows, days })
+  } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
+}
+
 export async function getTransactionHistory(req: AuthRequest, res: Response) {
   try {
     const { id } = req.params
