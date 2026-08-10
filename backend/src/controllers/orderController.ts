@@ -139,7 +139,12 @@ export async function updateOrder(req: AuthRequest, res: Response) {
     const ids = req.userBrandIds!
     const sets: string[] = []
     const vals: any[] = []
-    if (status !== undefined) { sets.push('status=?'); vals.push(status) }
+    if (status !== undefined) {
+      sets.push('status=?'); vals.push(status)
+      // Reopening an order (any manual move away from completed) clears a short close —
+      // the written-off balance becomes live again.
+      if (status !== 'completed') { sets.push('short_closed=0, short_close_note=NULL, short_closed_at=NULL') }
+    }
     if (delivery_mode !== undefined) { sets.push('delivery_mode=?'); vals.push(delivery_mode ?? null) }
     if (delivery_date !== undefined) { sets.push('delivery_date=?'); vals.push(delivery_date || null) }
     if (notes !== undefined) { sets.push('notes=?'); vals.push(notes ?? null) }
@@ -151,6 +156,36 @@ export async function updateOrder(req: AuthRequest, res: Response) {
       [...vals, id, ...ids]
     )
     res.json({ success: true, message: 'Order updated' })
+  } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
+}
+
+// Short close: the undeliverable remainder of a partly-supplied order is written off and
+// the order is marked completed (e.g. 996 of 1000 mtrs supplied, last 4 mtrs impossible).
+// The ordered quantities are left untouched — short_closed=1 tells the UI to show zero
+// balance — so the original contract quantities and the write-off stay auditable.
+export async function shortCloseOrder(req: AuthRequest, res: Response) {
+  try {
+    const { id } = req.params
+    const { note } = req.body
+    const ids = req.userBrandIds!
+    const rows = await executeQuery<any>(
+      `SELECT id, status FROM new_orders WHERE id = ? AND brand_id IN (${ids.map(() => '?').join(',')})`,
+      [id, ...ids]
+    )
+    if (!rows.length) return res.status(404).json({ success: false, error: 'Order not found' })
+    const cur = rows[0]
+    if (['completed', 'cancelled'].includes(cur.status)) {
+      return res.status(409).json({ success: false, error: `Order is already ${cur.status}` })
+    }
+    await executeQuery(
+      "UPDATE new_orders SET status='completed', short_closed=1, short_close_note=?, short_closed_at=NOW() WHERE id=?",
+      [note || null, id]
+    )
+    await executeQuery(
+      'INSERT INTO order_status_history (order_id, old_status, new_status, changed_by, notes) VALUES (?,?,?,?,?)',
+      [id, cur.status, 'completed', req.user!.id, `Short closed — balance written off${note ? ': ' + note : ''}`]
+    )
+    res.json({ success: true, message: 'Order short closed' })
   } catch (err: any) { res.status(500).json({ success: false, error: err.message }) }
 }
 

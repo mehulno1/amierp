@@ -65,6 +65,19 @@ export default function OrderDetail() {
     finally { setUpdating(false) }
   }
 
+  const shortClose = async () => {
+    const note = window.prompt('Short close this order? The undelivered balance will be written off and the order marked completed.\n\nReason (optional):')
+    if (note === null) return
+    setUpdating(true)
+    try {
+      await ordersApi.shortClose(parseInt(id!), { note: note.trim() || undefined })
+      qc.invalidateQueries({ queryKey: ['order', id] })
+      qc.invalidateQueries({ queryKey: ['orders'] })
+      toast.success('Order short closed — balance written off')
+    } catch (err: any) { toast.error(err.response?.data?.error || 'Failed to short close') }
+    finally { setUpdating(false) }
+  }
+
   const deleteOrder = async () => {
     if (!window.confirm(`Permanently delete order ${order?.order_id}? This cannot be undone.`)) return
     try {
@@ -109,6 +122,9 @@ export default function OrderDetail() {
         <Link to="/orders" className="text-gray-400 hover:text-gray-600"><ArrowLeft size={20} /></Link>
         <h1 className="text-2xl font-bold text-gray-900">{order.order_id}</h1>
         <span className={`badge-status ${statusColors[order.status]}`}>{order.status.replace(/_/g, ' ')}</span>
+        {!!order.short_closed && (
+          <span className="badge-status bg-amber-100 text-amber-700" title={order.short_close_note ? `Reason: ${order.short_close_note}` : 'Undelivered balance written off'}>short closed</span>
+        )}
         {isSuperAdmin() && (
           <button onClick={deleteOrder} className="ml-auto flex items-center gap-1.5 text-red-500 hover:text-red-700 text-sm border border-red-200 hover:border-red-400 px-3 py-1.5 rounded-lg">
             <Trash2 size={14} /> Delete Order
@@ -126,6 +142,13 @@ export default function OrderDetail() {
                 {s.replace(/_/g, ' ')}
               </button>
             ))}
+            {['partially_dispatched', 'ready_for_dispatch', 'processing', 'new_order', 'dispatched'].includes(order.status) && (
+              <button onClick={shortClose} disabled={updating}
+                className="px-3 py-1.5 rounded-lg text-sm border border-amber-300 text-amber-700 hover:bg-amber-50 transition-colors"
+                title="Write off the undelivered balance and mark the order completed">
+                short close
+              </button>
+            )}
           </div>
         </div>
       )}
@@ -600,7 +623,10 @@ function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, deliveri
               const unit = kgsDriven ? 'kgs' : 'pcs'
               const ordered = kgsDriven ? Number(item.quantity_kgs || 0) : Number(item.quantity_pcs || 0)
               const delivered = kgsDriven ? Number(item.delivered_kgs || 0) : Number(item.delivered_pcs || 0)
-              const balance = Math.max(0, ordered - delivered)
+              const rawBalance = Math.max(0, ordered - delivered)
+              // A short-closed order has its remaining balance written off — show zero
+              // owed, with the original shortfall noted underneath for the audit trail.
+              const balance = order.short_closed ? 0 : rawBalance
               const pct = ordered > 0 ? Math.min(100, Math.round((delivered / ordered) * 100)) : 0
               const pcs = Number(item.quantity_pcs || 0)
               const kgs = Number(item.quantity_kgs || 0)
@@ -618,7 +644,12 @@ function OrderItemsCard({ order, id, isSuperAdmin, editing, setEditing, deliveri
                       <div className={`h-full rounded-full ${pct >= 100 ? 'bg-green-500' : 'bg-amber-500'}`} style={{ width: `${pct}%` }} />
                     </div>
                   </td>
-                  <td className="py-3 px-3 text-right whitespace-nowrap tabular-nums font-medium text-gray-900">{balance.toLocaleString('en-IN', { maximumFractionDigits: 3 })} <span className="text-gray-400 font-normal">{unit}</span></td>
+                  <td className="py-3 px-3 text-right whitespace-nowrap tabular-nums font-medium text-gray-900">
+                    {balance.toLocaleString('en-IN', { maximumFractionDigits: 3 })} <span className="text-gray-400 font-normal">{unit}</span>
+                    {!!order.short_closed && rawBalance > 0 && (
+                      <div className="text-xs text-amber-600 font-normal mt-0.5">{rawBalance.toLocaleString('en-IN', { maximumFractionDigits: 3 })} {unit} written off</div>
+                    )}
+                  </td>
                   <td className="py-3 px-3 text-right whitespace-nowrap tabular-nums text-gray-700">₹{Number(item.rate).toLocaleString('en-IN')}</td>
                   <td className="py-3 pl-3 text-right whitespace-nowrap tabular-nums font-semibold text-gray-900">₹{Number(item.total).toLocaleString('en-IN')}</td>
                 </tr>

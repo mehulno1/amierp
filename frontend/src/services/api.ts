@@ -58,6 +58,7 @@ export const ordersApi = {
   create: (data: any) => api.post('/orders', data),
   update: (id: number, data: any) => api.put(`/orders/${id}`, data),
   cancel: (id: number) => api.patch(`/orders/${id}/cancel`),
+  shortClose: (id: number, data?: any) => api.patch(`/orders/${id}/short-close`, data),
   delete: (id: number) => api.delete(`/orders/${id}`),
   updateItems: (id: number, items: any[]) => api.put(`/orders/${id}/items`, { items }),
   updateBilling: (id: number, data: any) => api.put(`/orders/${id}/billing`, data),
