@@ -52,9 +52,11 @@ export async function createPurchaseOrder(req: AuthRequest, res: Response) {
     }
     const po_no = await getNextDocumentNumber(effectiveBrandId, 'AEPL/OFF')
 
+    // A PO created here has already been placed with the vendor — start it at
+    // 'confirmed' (shown as "PO placed" in the UI), not the DB default 'draft'.
     const [result] = await conn.execute(
-      `INSERT INTO purchase_orders (brand_id, po_no, requisition_id, vendor_quotation_id, vendor_id, po_date, quotation_no, quotation_date, gst_percent, terms_gst, terms_delivery, terms_delivery_instructions, terms_supply_basis, terms_payment, notes, created_by)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+      `INSERT INTO purchase_orders (brand_id, po_no, requisition_id, vendor_quotation_id, vendor_id, po_date, quotation_no, quotation_date, gst_percent, terms_gst, terms_delivery, terms_delivery_instructions, terms_supply_basis, terms_payment, notes, created_by, status)
+       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'confirmed')`,
       [effectiveBrandId, po_no, requisition_id || null, vendor_quotation_id || null, vendor_id, po_date, quotation_no, quotation_date || null,
        gst_percent || 18, terms_gst ?? null, terms_delivery ?? null, terms_delivery_instructions ?? null, terms_supply_basis ?? null, terms_payment ?? null, notes ?? null, req.user!.id]
     ) as any[]
@@ -89,14 +91,18 @@ export async function updatePurchaseOrder(req: AuthRequest, res: Response) {
     if (!rows.length) { conn.release(); return res.status(404).json({ success: false, error: 'PO not found' }) }
 
     const { vendor_id, po_date, quotation_no, quotation_date, gst_percent,
-      terms_gst, terms_delivery, terms_delivery_instructions, terms_supply_basis, terms_payment, notes, items } = req.body
+      terms_gst, terms_delivery, terms_delivery_instructions, terms_supply_basis, terms_payment, notes, status, items } = req.body
+
+    const validStatuses = ['draft', 'confirmed', 'partially_delivered', 'delivered', 'cancelled']
+    const newStatus = validStatuses.includes(status) ? status : null
 
     await conn.beginTransaction()
     await conn.execute(
       `UPDATE purchase_orders SET vendor_id=?, po_date=?, quotation_no=?, quotation_date=?, gst_percent=?,
-       terms_gst=?, terms_delivery=?, terms_delivery_instructions=?, terms_supply_basis=?, terms_payment=?, notes=? WHERE id=?`,
+       terms_gst=?, terms_delivery=?, terms_delivery_instructions=?, terms_supply_basis=?, terms_payment=?, notes=?,
+       status = COALESCE(?, status) WHERE id=?`,
       [vendor_id, po_date, quotation_no ?? null, quotation_date || null, gst_percent ?? 18,
-       terms_gst ?? null, terms_delivery ?? null, terms_delivery_instructions ?? null, terms_supply_basis ?? null, terms_payment ?? null, notes ?? null, id]
+       terms_gst ?? null, terms_delivery ?? null, terms_delivery_instructions ?? null, terms_supply_basis ?? null, terms_payment ?? null, notes ?? null, newStatus, id]
     )
     if (Array.isArray(items)) {
       // Once any goods receipt (GRN) exists against this PO, the line set is frozen —

@@ -23,6 +23,16 @@ const statusColors: Record<string, string> = {
   cancelled: 'bg-red-100 text-red-700',
 }
 
+// 'confirmed' is the freshly-created state — the client calls it "PO placed".
+const statusLabels: Record<string, string> = {
+  draft: 'draft',
+  confirmed: 'PO placed',
+  partially_delivered: 'partially delivered',
+  delivered: 'delivered',
+  cancelled: 'cancelled',
+}
+const statusLabel = (s: string) => statusLabels[s] || s.replace(/_/g, ' ')
+
 // Auto-computing item row. Watches qty + rate via react-hook-form and writes back the
 // derived total whenever either changes, so the displayed total field always matches
 // what's stored — and the PO summary at the bottom of the modal can sum without drift.
@@ -92,6 +102,7 @@ function POFormModal({ po, onClose, onSuccess }: { po?: any; onClose: () => void
 
   const { register, control, handleSubmit, watch, setValue } = useForm({
     defaultValues: isEdit ? {
+      status: po.status || 'confirmed',
       brand_id: defaultBrandId,
       vendor_id: String(po.vendor_id || ''),
       po_date: toIsoDate(po.po_date),
@@ -189,6 +200,13 @@ function POFormModal({ po, onClose, onSuccess }: { po?: any; onClose: () => void
             <div><label className="block text-sm font-medium text-gray-700 mb-1">Quotation No.</label><input className="input-field" placeholder="Verbal / quote ref" {...register('quotation_no')} /></div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1">Quotation Date</label><input type="date" className="input-field" {...register('quotation_date')} /></div>
             <div><label className="block text-sm font-medium text-gray-700 mb-1">GST %</label><input type="number" step="0.01" className="input-field" {...register('gst_percent')} /></div>
+            {isEdit && (
+              <div><label className="block text-sm font-medium text-gray-700 mb-1">Status</label>
+                <select className="input-field" {...register('status')}>
+                  {Object.entries(statusLabels).map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+              </div>
+            )}
           </div>
 
           <div>
@@ -357,7 +375,7 @@ export default function PurchaseOrders() {
       <div className="flex gap-2 overflow-x-auto pb-1">
         {['', 'draft', 'confirmed', 'partially_delivered', 'delivered'].map(s => (
           <button key={s} onClick={() => setStatus(s)} className={`px-3 py-1.5 rounded-lg text-sm border transition-colors whitespace-nowrap shrink-0 ${status === s ? 'bg-blue-600 text-white border-blue-600' : 'border-gray-300 text-gray-600 hover:bg-gray-50'}`}>
-            {s ? s.replace(/_/g, ' ') : 'All'}
+            {s ? statusLabel(s) : 'All'}
           </button>
         ))}
       </div>
@@ -388,7 +406,7 @@ export default function PurchaseOrders() {
                   <td className="py-3 text-gray-900">{p.vendor_name}</td>
                   <td className="py-3 text-gray-500">{fmtDate(p.po_date)}</td>
                   <td className="py-3 text-gray-500">{p.quotation_no || '—'}</td>
-                  <td className="py-3"><span className={`badge-status ${statusColors[p.status]}`}>{p.status.replace(/_/g, ' ')}</span></td>
+                  <td className="py-3"><span className={`badge-status ${statusColors[p.status]}`}>{statusLabel(p.status)}</span></td>
                   <td className="py-3"><ReceivedBadge po={p} /></td>
                   <td className="py-3">
                     <div className="flex items-center gap-2">
