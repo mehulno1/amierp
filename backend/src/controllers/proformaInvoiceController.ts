@@ -101,7 +101,7 @@ export async function getProformaInvoice(req: AuthRequest, res: Response) {
       `SELECT pi.*, o.order_id as order_ref, o.order_type, o.gst_type,
         c.name as client_name, c.contact_person as client_contact, c.email as client_email, c.mobile as client_mobile,
         c.billing_address, c.billing_city, c.billing_state, c.billing_zip, c.gstin as client_gstin,
-        b.name as brand_name, b.address as brand_address, b.phone as brand_phone, b.email as brand_email, b.gstin as brand_gstin, b.pan as brand_pan, b.iec as brand_iec
+        b.name as brand_name, b.code as brand_code, b.address as brand_address, b.phone as brand_phone, b.email as brand_email, b.gstin as brand_gstin, b.pan as brand_pan, b.iec as brand_iec
        FROM proforma_invoices pi
        JOIN new_orders o ON pi.order_id = o.id
        JOIN new_clients c ON o.client_id = c.id

@@ -7,6 +7,7 @@ import LoadingSpinner from './LoadingSpinner'
 import DocumentHeader from './DocumentHeader'
 import { fmtDate } from '../utils/formatDate'
 import { downloadDocumentPdf } from '../utils/renderDocumentPdf'
+import stampSign from '../assets/aepl-stamp-sign.png'
 
 export default function PIDocument({ piId, onClose }: { piId: number; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
@@ -219,8 +220,12 @@ export default function PIDocument({ piId, onClose }: { piId: number; onClose: (
                 {pi.brand_gstin && <div>GSTIN: {pi.brand_gstin}</div>}
                 {pi.order_type === 'export' && pi.brand_iec && <div>IEC: {pi.brand_iec}</div>}
               </div>
-              <div className="text-center">
-                <div className="border-t border-gray-400 pt-2 mt-8 w-40">Authorised Signatory</div>
+              <div className="text-center" style={{ display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
+                {/* Rubber stamp + signature is AEPL's own; other brands sign manually. */}
+                {pi.brand_code === 'AEPL' && (
+                  <img src={stampSign} alt="" crossOrigin="anonymous" style={{ width: '190px', height: 'auto', marginBottom: '-8px' }} />
+                )}
+                <div className={`border-t border-gray-400 pt-2 w-40 ${pi.brand_code === 'AEPL' ? '' : 'mt-8'}`}>Authorised Signatory</div>
                 <div className="text-gray-600 mt-1">{pi.brand_name}</div>
               </div>
             </div>
